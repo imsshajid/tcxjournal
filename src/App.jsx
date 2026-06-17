@@ -7,6 +7,8 @@ import {
   Check,
   ChevronDown,
   Download,
+  Edit3,
+  Eye,
   FileSpreadsheet,
   FileUp,
   Home,
@@ -18,6 +20,7 @@ import {
   Settings,
   SlidersHorizontal,
   Sparkles,
+  StickyNote,
   Trash2,
   UploadCloud,
   WalletCards,
@@ -47,6 +50,10 @@ const DEFAULT_SETTINGS = {
   defaultMarket: 'ALL',
   ocrMode: 'AUTO',
 };
+const IMPORT_LATER_KEY = 'tcxjournal.importLater.v1';
+const STRATEGIES = ['Support & Resistance', 'Trend Following', 'Breakout', 'Reversal', 'Scalping', 'News Trading', 'Fibonacci', 'Moving Average', 'Bollinger Bands', 'RSI Divergence', 'OTC Strategy', 'Imported', 'Screenshot', 'Unclassified'];
+const EMOTIONS = ['Calm', 'Confident', 'Anxious', 'Fearful', 'Greedy', 'Revenge', 'Bored', 'Focused', 'Patient', 'Neutral'];
+const TIMEFRAMES = ['10s', '15s', '30s', '1m', '2m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
 
 const seedTrades = [
   makeTrade({
@@ -137,9 +144,9 @@ function makeTrade(input) {
     close: cleanNumber(input.close ?? input.closingPrice ?? input.closing_price),
     openedAt: toIso(input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
     closedAt: toIso(input.closedAt || input.closingTime || input.closing_time_utc || input.close_time),
-    duration: input.duration || durationBetween(input.openedAt || input.openingTime, input.closedAt || input.closingTime),
+    duration: input.duration || input.timeframe || durationBetween(input.openedAt || input.openingTime, input.closedAt || input.closingTime),
     strategy: input.strategy || 'Unclassified',
-    session: input.session || 'Unassigned',
+    session: input.session || inferForexSession(input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
     emotion: input.emotion || 'Neutral',
     closeReason: title(input.closeReason || input.close_reason || ''),
     commission: cleanNumber(input.commission),
@@ -169,6 +176,9 @@ function App() {
   const [market, setMarket] = useState(data.settings.defaultMarket || 'ALL');
   const [selectedDate, setSelectedDate] = useState('');
   const [navOpen, setNavOpen] = useState(false);
+  const [activeTrade, setActiveTrade] = useState(null);
+  const [editingTrade, setEditingTrade] = useState(null);
+  const [dayPopup, setDayPopup] = useState('');
 
   useEffect(() => localStorage.setItem(LS, JSON.stringify(data)), [data]);
 
@@ -204,11 +214,29 @@ function App() {
 
   const saveTrade = (trade) => importTrades([trade]);
   const deleteTrade = (id) => setData((current) => ({ ...current, trades: current.trades.filter((t) => t.id !== id) }));
+  const updateTrade = (trade) => {
+    const normalized = makeTrade(trade);
+    setData((current) => ({
+      ...current,
+      trades: current.trades.map((item) => item.id === normalized.id ? normalized : item),
+    }));
+    setEditingTrade(null);
+    setActiveTrade(normalized);
+  };
+  const removeTrade = (id) => {
+    deleteTrade(id);
+    setActiveTrade(null);
+    setEditingTrade(null);
+  };
   const updateSettings = (settings) => {
     setData((current) => ({ ...current, settings: { ...current.settings, ...settings } }));
     if (settings.defaultMarket) setMarket(settings.defaultMarket);
   };
   const pickDate = (key) => setSelectedDate((current) => (current === key ? '' : key));
+  const openCalendarDay = (key) => {
+    setSelectedDate(key);
+    setDayPopup(key);
+  };
 
   return (
     <div className="app">
@@ -229,23 +257,57 @@ function App() {
             selectedTrades={selectedTrades}
             onDatePick={pickDate}
             clearDate={() => setSelectedDate('')}
+            onOpenTrade={setActiveTrade}
+            onEditTrade={setEditingTrade}
           />
         )}
-        {page === 'New Trade' && <NewTrade onSave={saveTrade} onImport={importTrades} settings={data.settings} />}
-        {page === 'History' && <History trades={trades} deleteTrade={deleteTrade} />}
+        {page === 'New Trade' && <NewTrade onSave={saveTrade} onImport={importTrades} settings={data.settings} onOpenTrade={setActiveTrade} />}
+        {page === 'History' && <History trades={trades} deleteTrade={removeTrade} onOpenTrade={setActiveTrade} onEditTrade={setEditingTrade} />}
         {page === 'Analytics' && <Analytics trades={trades} />}
         {page === 'Calendar' && (
           <CalendarPage
             trades={trades}
             selectedDate={selectedDate}
             selectedTrades={selectedTrades}
-            onDatePick={pickDate}
+            onDatePick={openCalendarDay}
             clearDate={() => setSelectedDate('')}
+            onOpenTrade={setActiveTrade}
+            onEditTrade={setEditingTrade}
           />
         )}
         {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} />}
       </main>
       <BottomNav page={page} setPage={setPage} />
+      {activeTrade && (
+        <TradeDetailModal
+          trade={activeTrade}
+          onClose={() => setActiveTrade(null)}
+          onEdit={() => {
+            setEditingTrade(activeTrade);
+            setActiveTrade(null);
+          }}
+          onDelete={() => removeTrade(activeTrade.id)}
+        />
+      )}
+      {editingTrade && (
+        <TradeEditorModal
+          trade={editingTrade}
+          onClose={() => setEditingTrade(null)}
+          onSave={updateTrade}
+          onDelete={() => removeTrade(editingTrade.id)}
+        />
+      )}
+      {dayPopup && (
+        <DayTradesModal
+          date={dayPopup}
+          trades={trades.filter((t) => dateKey(t.openedAt) === dayPopup)}
+          onClose={() => setDayPopup('')}
+          onOpenTrade={(trade) => {
+            setDayPopup('');
+            setActiveTrade(trade);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -331,7 +393,7 @@ function BottomNav({ page, setPage }) {
   );
 }
 
-function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate }) {
+function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade }) {
   const shownTrades = selectedDate ? selectedTrades : trades.slice(0, 8);
   return (
     <section className="page" onClick={() => selectedDate && clearDate()}>
@@ -344,6 +406,8 @@ function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate
           title={selectedDate ? `Trades on ${formatDate(selectedDate)}` : 'Recent Trades'}
           trades={shownTrades}
           compact
+          onOpenTrade={onOpenTrade}
+          onEditTrade={onEditTrade}
         />
         <StrategyPanel trades={trades} />
       </div>
@@ -407,13 +471,27 @@ function EquityPanel({ trades }) {
 }
 
 function ResultPanel({ trades }) {
+  return <OutcomePanel trades={trades} />;
+}
+
+function OutcomePanel({ trades }) {
   const data = [
     { name: 'Win', value: trades.filter((t) => t.result === 'WIN').length, color: '#35d49a' },
     { name: 'Loss', value: trades.filter((t) => t.result === 'LOSS').length, color: '#f65f6f' },
     { name: 'Draw', value: trades.filter((t) => t.result === 'DRAW').length, color: '#d7b56d' },
   ];
+  const assets = Object.entries(trades.reduce((acc, trade) => {
+    acc[trade.asset] = acc[trade.asset] || { pnl: 0, count: 0 };
+    acc[trade.asset].pnl += toNumber(trade.profit);
+    acc[trade.asset].count += 1;
+    return acc;
+  }, {}));
+  const bestAsset = assets.sort((a, b) => b[1].pnl - a[1].pnl)[0];
+  const busiestAsset = [...assets].sort((a, b) => b[1].count - a[1].count)[0];
+  const wins = trades.filter((t) => t.profit > 0).map((t) => toNumber(t.profit));
+  const losses = trades.filter((t) => t.profit < 0).map((t) => Math.abs(toNumber(t.profit)));
   return (
-    <div className="card">
+    <div className="card outcomeCard">
       <PanelTitle title="Outcome Mix" tag="Count" />
       <ResponsiveContainer height={220}>
         <PieChart>
@@ -426,20 +504,40 @@ function ResultPanel({ trades }) {
       <div className="legend">
         {data.map((item) => <p key={item.name}><i style={{ background: item.color }} />{item.name}<b>{item.value}</b></p>)}
       </div>
+      <div className="outcomeStats">
+        <Info label="Win rate" value={`${winRate(trades).toFixed(1)}%`} />
+        <Info label="Avg win" value={money(average(wins))} />
+        <Info label="Avg loss" value={money(-average(losses))} />
+        <Info label="Best asset" value={bestAsset ? `${bestAsset[0]} ${money(bestAsset[1].pnl)}` : '-'} />
+        <Info label="Most traded" value={busiestAsset ? `${busiestAsset[0]} (${busiestAsset[1].count})` : '-'} />
+      </div>
     </div>
   );
 }
 
-function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearDate }) {
+function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade }) {
+  const [showAll, setShowAll] = useState(false);
+  const listTrades = selectedDate ? selectedTrades : (showAll ? trades : trades.slice(0, 8));
   return (
     <section className="page calendarPage">
       <CalendarPanel trades={trades} selectedDate={selectedDate} onDatePick={onDatePick} full />
-      <TradeList
-        title={selectedDate ? `Trades on ${formatDate(selectedDate)}` : 'Recent Trades'}
-        trades={selectedDate ? selectedTrades : trades.slice(0, 12)}
-        empty="No trades on this day."
-      />
-      {selectedDate && <button className="soft clearDay" onClick={clearDate}>Show recent trades</button>}
+      <div className="calendarSide">
+        <OutcomePanel trades={selectedDate ? selectedTrades : trades} />
+        <TradeList
+          title={selectedDate ? `Trades on ${formatDate(selectedDate)}` : showAll ? 'All Trades' : 'Recent Trades'}
+          trades={listTrades}
+          empty="No trades on this day."
+          deleteTrade={undefined}
+          onOpenTrade={onOpenTrade}
+          onEditTrade={onEditTrade}
+          actionSlot={
+            <button className="soft tiny" onClick={() => setShowAll((current) => !current)}>
+              {showAll ? 'Recent' : 'All trades'}
+            </button>
+          }
+        />
+        {selectedDate && <button className="soft clearDay" onClick={clearDate}>Show recent trades</button>}
+      </div>
     </section>
   );
 }
@@ -499,30 +597,32 @@ function StrategyPanel({ trades }) {
   );
 }
 
-function TradeList({ title = 'Trade History', trades, compact = false, deleteTrade, empty = 'No trades yet.' }) {
+function TradeList({ title = 'Trade History', trades, compact = false, deleteTrade, empty = 'No trades yet.', onOpenTrade, onEditTrade, actionSlot }) {
   return (
     <div className={`card tableCard ${compact ? '' : 'wideCard'}`}>
-      <PanelTitle title={title} tag={`${trades.length} trades`} />
+      <PanelTitle title={title} tag={`${trades.length} trades`} action={actionSlot} />
       <div className="table">
         <div className="trow head">
-          <span>Asset</span><span>Type</span><span>Open</span><span>Result</span>{!compact && <span />}
+          <span>Trade</span><span>Setup</span><span>Session</span><span>Result</span>{!compact && <span />}
         </div>
         {trades.map((trade) => (
-          <div className="trow" key={trade.id}>
-            <div>
+          <div className="trow tradeButton" key={trade.id} role="button" tabIndex={0} onClick={() => onOpenTrade?.(trade)} onKeyDown={(e) => e.key === 'Enter' && onOpenTrade?.(trade)}>
+            <div className="tradeIdentity">
               <b>{trade.asset}</b>
-              <small>{trade.sourceId ? `#${trade.sourceId}` : trade.market} - {shortDate(trade.openedAt)}</small>
+              <small>{shortDate(trade.openedAt)} - {timeOnly(trade.openedAt)} - {trade.market} {trade.direction}</small>
             </div>
-            <span className={['UP', 'BUY'].includes(trade.direction) ? 'green' : 'red'}>
-              {trade.market} {trade.direction}
-            </span>
-            <span>{trade.open || '-'}<small>{timeOnly(trade.openedAt)}</small></span>
+            <span className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i></span>
+            <span>{trade.session}<small>{trade.duration || 'Timed trade'}</small></span>
             <span className={trade.profit >= 0 ? 'green' : 'red'}>
               {money(trade.profit)}
               {trade.market === 'FTT' && <small>{trade.payout || 90}% payout</small>}
             </span>
             {!compact && (
-              <button className="iconBtn danger" onClick={() => deleteTrade(trade.id)}><Trash2 size={16} /></button>
+              <span className="rowActions" onClick={(e) => e.stopPropagation()}>
+                <button className="iconBtn" onClick={() => onOpenTrade?.(trade)}><Eye size={15} /></button>
+                <button className="iconBtn" onClick={() => onEditTrade?.(trade)}><Edit3 size={15} /></button>
+                <button className="iconBtn danger" onClick={() => deleteTrade?.(trade.id)}><Trash2 size={15} /></button>
+              </span>
             )}
           </div>
         ))}
@@ -532,7 +632,7 @@ function TradeList({ title = 'Trade History', trades, compact = false, deleteTra
   );
 }
 
-function NewTrade({ onSave, onImport, settings }) {
+function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
   const [tab, setTab] = useState('Upload');
   const [market, setMarket] = useState(settings.defaultMarket === 'CFD' ? 'CFD' : 'FTT');
   const [status, setStatus] = useState('');
@@ -549,12 +649,17 @@ function NewTrade({ onSave, onImport, settings }) {
     openedAt: inputDateTime(),
     closedAt: inputDateTime(),
     strategy: 'Unclassified',
-    session: 'Unassigned',
+    session: inferForexSession(new Date()),
     emotion: 'Neutral',
     notes: '',
   });
 
-  const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const set = (key, value) => setForm((current) => {
+    const next = { ...current, [key]: value };
+    if (key === 'openedAt') next.session = inferForexSession(value);
+    if (key === 'income' || key === 'amount') next.payout = normalizePayout('', key === 'amount' ? value : next.amount, key === 'income' ? value : next.income);
+    return next;
+  });
   const switchMarket = (next) => {
     setMarket(next);
     setForm((current) => ({
@@ -569,6 +674,7 @@ function NewTrade({ onSave, onImport, settings }) {
     const trade = makeTrade({ ...form, market, profit: market === 'CFD' ? form.profit : undefined });
     const result = onSave(trade);
     setStatus(result.added ? 'Trade saved.' : 'That trade already exists.');
+    if (result.added) onOpenTrade?.(trade);
   };
 
   return (
@@ -586,42 +692,13 @@ function NewTrade({ onSave, onImport, settings }) {
         {tab === 'Upload' ? (
           <Importer onImport={onImport} settings={settings} />
         ) : (
-          <div className="form">
+          <div className="manualTicket">
             <div className="segmented inline">
               {['FTT', 'CFD'].filter((m) => settings.enabled[m]).map((m) => (
                 <button key={m} className={market === m ? 'on' : ''} onClick={() => switchMarket(m)}>{m}</button>
               ))}
             </div>
-            <div className="twoBtns">
-              <button className={['UP', 'BUY'].includes(form.direction) ? 'selected up' : ''} onClick={() => set('direction', market === 'FTT' ? 'UP' : 'BUY')}>
-                {market === 'FTT' ? 'Up' : 'Buy'}
-              </button>
-              <button className={['DOWN', 'SELL'].includes(form.direction) ? 'selected dn' : ''} onClick={() => set('direction', market === 'FTT' ? 'DOWN' : 'SELL')}>
-                {market === 'FTT' ? 'Down' : 'Sell'}
-              </button>
-            </div>
-            <div className="fields">
-              <Input label="Account" value={form.account} onChange={(v) => set('account', v)} />
-              <Input label="Asset" value={form.asset} onChange={(v) => set('asset', v)} />
-              <Input label={market === 'FTT' ? 'Stake' : 'Lot'} type="number" value={form.amount} onChange={(v) => set('amount', v)} />
-              {market === 'FTT' ? (
-                <>
-                  <Input label="Result" type="number" value={form.income} onChange={(v) => {
-                    set('income', v);
-                    set('payout', normalizePayout('', form.amount, v));
-                  }} />
-                  <Input label="Payout %" type="number" value={form.payout} onChange={(v) => set('payout', v)} />
-                </>
-              ) : (
-                <Input label="P/L" type="number" value={form.profit} onChange={(v) => set('profit', v)} />
-              )}
-              <Select label="Strategy" value={form.strategy} onChange={(v) => set('strategy', v)} options={['Unclassified', 'Trend', 'Breakout', 'Reversal', 'Support & Resistance', 'News', 'Scalping']} />
-              <Input label="Open price" value={form.open} onChange={(v) => set('open', v)} />
-              <Input label="Close price" value={form.close} onChange={(v) => set('close', v)} />
-              <Input label="Opened at" type="datetime-local" value={form.openedAt} onChange={(v) => set('openedAt', v)} />
-              <Input label="Closed at" type="datetime-local" value={form.closedAt} onChange={(v) => set('closedAt', v)} />
-            </div>
-            <label className="area"><span>Notes</span><textarea value={form.notes} onChange={(e) => set('notes', e.target.value)} /></label>
+            <TradeFormFields draft={{ ...form, market }} set={set} />
             <button className="primary save" onClick={save}><Check size={18} />Save trade</button>
             {status && <p className="status">{status}</p>}
           </div>
@@ -635,7 +712,10 @@ function Importer({ onImport, settings }) {
   const [mode, setMode] = useState(settings.ocrMode || 'AUTO');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
-  const [drafts, setDrafts] = useState([]);
+  const [drafts, setDrafts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(IMPORT_LATER_KEY)) || []; } catch { return []; }
+  });
+  const [activeIndex, setActiveIndex] = useState(0);
   const fileRef = useRef();
 
   async function handleFiles(fileList) {
@@ -659,6 +739,7 @@ function Importer({ onImport, settings }) {
       }
       if (!allDrafts.length) throw new Error('no-trades');
       setDrafts(allDrafts);
+      setActiveIndex(0);
       setStatus(`${allDrafts.length} trade(s) detected.`);
     } catch (error) {
       const message = error.message === 'not-trade-image' || error.message === 'no-trades'
@@ -677,7 +758,21 @@ function Importer({ onImport, settings }) {
     const result = onImport(drafts);
     setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.`);
     setDrafts([]);
+    setActiveIndex(0);
+    localStorage.removeItem(IMPORT_LATER_KEY);
   };
+  const skipAll = () => {
+    setDrafts([]);
+    setActiveIndex(0);
+    localStorage.removeItem(IMPORT_LATER_KEY);
+    setStatus('Import skipped.');
+  };
+  const logLater = () => {
+    localStorage.setItem(IMPORT_LATER_KEY, JSON.stringify(drafts));
+    setStatus(`${drafts.length} trade(s) saved for later review.`);
+  };
+  const activeDraft = drafts[Math.min(activeIndex, Math.max(0, drafts.length - 1))];
+  const updateActive = (key, value) => activeDraft && updateDraft(activeDraft.id, key, value);
 
   return (
     <div className="importer">
@@ -697,27 +792,39 @@ function Importer({ onImport, settings }) {
       </div>
       {status && <p className="status">{status}</p>}
       {!!drafts.length && (
-        <div className="drafts">
-          <PanelTitle title="Review Import" tag={drafts.length > 50 ? `50 of ${drafts.length}` : `${drafts.length} detected`} />
-          {drafts.length > 50 && <p className="status">Saving will include all {drafts.length} detected trades.</p>}
-          {drafts.slice(0, 50).map((trade) => (
-            <div className="draft" key={trade.id}>
-              <b>{trade.market}</b>
-              <Input label="Asset" value={trade.asset} onChange={(v) => updateDraft(trade.id, 'asset', v)} />
-              <Input label={trade.market === 'FTT' ? 'Stake' : 'Lot'} type="number" value={trade.amount} onChange={(v) => updateDraft(trade.id, 'amount', v)} />
-              {trade.market === 'FTT' && <Input label="Payout %" type="number" value={trade.payout || 90} onChange={(v) => updateDraft(trade.id, 'payout', v)} />}
-              <Input label="P/L" type="number" value={trade.profit} onChange={(v) => updateDraft(trade.id, 'profit', v)} />
-              <button className="iconBtn danger" onClick={() => setDrafts((current) => current.filter((item) => item.id !== trade.id))}><X size={16} /></button>
+        <div className="importReview">
+          <PanelTitle title="Review Import" tag={`${activeIndex + 1} of ${drafts.length}`} />
+          <div className="reviewLayout">
+            <div className="reviewQueue">
+              {drafts.slice(0, 120).map((trade, index) => (
+                <button key={trade.id} className={index === activeIndex ? 'queueItem active' : 'queueItem'} onClick={() => setActiveIndex(index)}>
+                  <b>{trade.asset}</b>
+                  <span>{trade.strategy} - {trade.emotion}</span>
+                  <strong className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</strong>
+                </button>
+              ))}
+              {drafts.length > 120 && <p className="status">Showing first 120 in the queue. Save all includes every detected trade.</p>}
             </div>
-          ))}
-          <button className="primary save" onClick={saveDrafts}><Check size={18} />Save new trades</button>
+            <div className="reviewEditor">
+              {activeDraft && <TradeFormFields draft={activeDraft} set={updateActive} />}
+              <div className="reviewNav">
+                <button className="soft" onClick={() => setActiveIndex((i) => Math.max(0, i - 1))}>Previous</button>
+                <button className="soft" onClick={() => setActiveIndex((i) => Math.min(drafts.length - 1, i + 1))}>Next</button>
+              </div>
+            </div>
+          </div>
+          <div className="modalActions importActions">
+            <button className="soft dangerText" onClick={skipAll}><X size={16} />Skip all</button>
+            <button className="soft" onClick={logLater}><StickyNote size={16} />Log later</button>
+            <button className="primary" onClick={saveDrafts}><Check size={18} />Save all reviewed trades</button>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function History({ trades, deleteTrade }) {
+function History({ trades, deleteTrade, onOpenTrade, onEditTrade }) {
   const exportCsv = () => {
     const headers = ['market', 'sourceId', 'asset', 'direction', 'amount', 'income', 'payout', 'profit', 'open', 'close', 'openedAt', 'closedAt', 'closeReason'];
     const rows = trades.map((trade) => headers.map((key) => csvCell(trade[key])).join(','));
@@ -728,7 +835,7 @@ function History({ trades, deleteTrade }) {
       <div className="toolbar">
         <button className="soft" onClick={exportCsv}><Download size={17} />Export CSV</button>
       </div>
-      <TradeList trades={trades} deleteTrade={deleteTrade} />
+      <TradeList trades={trades} deleteTrade={deleteTrade} onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} />
     </section>
   );
 }
@@ -767,8 +874,8 @@ function SettingsPage({ settings, updateSettings }) {
   );
 }
 
-function PanelTitle({ title, tag }) {
-  return <div className="panelTitle"><h3>{title}</h3>{tag && <button>{tag}<ChevronDown size={14} /></button>}</div>;
+function PanelTitle({ title, tag, action }) {
+  return <div className="panelTitle"><h3>{title}</h3><div className="panelActions">{action}{tag && <button>{tag}<ChevronDown size={14} /></button>}</div></div>;
 }
 
 function Input({ label, value, onChange, type = 'text' }) {
@@ -777,6 +884,147 @@ function Input({ label, value, onChange, type = 'text' }) {
 
 function Select({ label, value, onChange, options }) {
   return <label className="field"><span>{label}</span><select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select></label>;
+}
+
+function TradeEditorModal({ trade, onClose, onSave, onDelete }) {
+  const [draft, setDraft] = useState(() => ({ ...makeTrade(trade), openedAt: inputDateTime(trade.openedAt), closedAt: inputDateTime(trade.closedAt) }));
+  const set = (key, value) => setDraft((current) => {
+    const next = { ...current, [key]: value };
+    if (key === 'openedAt') next.session = inferForexSession(value);
+    if (key === 'income' || key === 'amount') next.payout = normalizePayout('', key === 'amount' ? value : next.amount, key === 'income' ? value : next.income);
+    return next;
+  });
+  return (
+    <Modal onClose={onClose} className="tradeModal">
+      <div className="modalHead">
+        <div>
+          <span className="miniCaps">{draft.market} trade</span>
+          <h2>{trade.id === draft.id ? 'Edit Trade' : 'Trade'}</h2>
+        </div>
+        <button className="iconBtn" onClick={onClose}><X size={16} /></button>
+      </div>
+      <TradeFormFields draft={draft} set={set} />
+      <div className="modalActions">
+        <button className="soft dangerText" onClick={onDelete}><Trash2 size={16} />Delete</button>
+        <button className="primary" onClick={() => onSave(makeTrade(draft))}><Check size={17} />Save changes</button>
+      </div>
+    </Modal>
+  );
+}
+
+function TradeDetailModal({ trade, onClose, onEdit, onDelete }) {
+  return (
+    <Modal onClose={onClose} className="tradeModal detailModal">
+      <div className="modalHead">
+        <div>
+          <span className="miniCaps">{trade.market} - {trade.session}</span>
+          <h2>{trade.asset}</h2>
+        </div>
+        <button className="iconBtn" onClick={onClose}><X size={16} /></button>
+      </div>
+      <div className="detailHero">
+        <div>
+          <span className={['UP', 'BUY'].includes(trade.direction) ? 'green' : 'red'}>{trade.direction}</span>
+          <b className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</b>
+        </div>
+        <div className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i><i>{trade.duration || 'Timed trade'}</i></div>
+      </div>
+      <div className="detailGrid">
+        <Info label="Open time" value={`${shortDate(trade.openedAt)} ${timeOnly(trade.openedAt)}`} />
+        <Info label="Close time" value={`${shortDate(trade.closedAt)} ${timeOnly(trade.closedAt)}`} />
+        <Info label="Open price" value={trade.open || '-'} />
+        <Info label="Close price" value={trade.close || '-'} />
+        <Info label={trade.market === 'FTT' ? 'Stake' : 'Lot'} value={trade.amount} />
+        <Info label="Payout" value={trade.market === 'FTT' ? `${trade.payout || 90}%` : trade.closeReason || '-'} />
+        {!!trade.notes && <Info label="Notes" value={trade.notes} wide />}
+      </div>
+      <div className="modalActions">
+        <button className="soft dangerText" onClick={onDelete}><Trash2 size={16} />Delete</button>
+        <button className="primary" onClick={onEdit}><Edit3 size={17} />Edit trade</button>
+      </div>
+    </Modal>
+  );
+}
+
+function DayTradesModal({ date, trades, onClose, onOpenTrade }) {
+  return (
+    <Modal onClose={onClose} className="dayModal">
+      <div className="modalHead">
+        <div>
+          <span className="miniCaps">Calendar trades</span>
+          <h2>{formatDate(date)}</h2>
+        </div>
+        <button className="iconBtn" onClick={onClose}><X size={16} /></button>
+      </div>
+      <div className="daySummary">
+        <Info label="Trades" value={trades.length} />
+        <Info label="P&L" value={money(sum(trades, 'profit'))} />
+        <Info label="Win rate" value={`${winRate(trades).toFixed(1)}%`} />
+      </div>
+      <div className="modalTradeStack">
+        {trades.map((trade) => (
+          <button key={trade.id} className="miniTrade" onClick={() => onOpenTrade(trade)}>
+            <b>{trade.asset}</b>
+            <span>{trade.strategy} - {trade.emotion}</span>
+            <strong className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</strong>
+          </button>
+        ))}
+        {!trades.length && <p className="empty">No trades on this day.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function TradeFormFields({ draft, set }) {
+  const isFtt = draft.market === 'FTT';
+  return (
+    <div className="form">
+      <div className="twoBtns">
+        <button className={['UP', 'BUY'].includes(draft.direction) ? 'selected up' : ''} onClick={() => set('direction', isFtt ? 'UP' : 'BUY')}>
+          {isFtt ? 'CALL (Up)' : 'BUY'}
+        </button>
+        <button className={['DOWN', 'SELL'].includes(draft.direction) ? 'selected dn' : ''} onClick={() => set('direction', isFtt ? 'DOWN' : 'SELL')}>
+          {isFtt ? 'PUT (Down)' : 'SELL'}
+        </button>
+      </div>
+      <div className="fields">
+        <Input label="Asset" value={draft.asset} onChange={(v) => set('asset', v)} />
+        <Input label="Trade date" type="datetime-local" value={inputDateTime(draft.openedAt)} onChange={(v) => set('openedAt', v)} />
+        <Input label={isFtt ? 'Amount ($)' : 'Lot'} type="number" value={draft.amount} onChange={(v) => set('amount', v)} />
+        {isFtt ? (
+          <>
+            <Input label="Payout %" type="number" value={draft.payout} onChange={(v) => set('payout', v)} />
+            <Input label="Result" type="number" value={draft.income} onChange={(v) => set('income', v)} />
+          </>
+        ) : (
+          <Input label="P/L" type="number" value={draft.profit} onChange={(v) => set('profit', v)} />
+        )}
+        <Input label="Entry price" value={draft.open} onChange={(v) => set('open', v)} />
+        <Input label="Exit price" value={draft.close} onChange={(v) => set('close', v)} />
+        <Select label="Strategy" value={draft.strategy} onChange={(v) => set('strategy', v)} options={STRATEGIES} />
+        <Select label="Timeframe" value={draft.duration || '1m'} onChange={(v) => set('duration', v)} options={TIMEFRAMES} />
+        <Select label="Session" value={draft.session || inferForexSession(draft.openedAt)} onChange={(v) => set('session', v)} options={['Sydney', 'Tokyo', 'London', 'New York', 'Unassigned']} />
+        <Select label="Emotion" value={draft.emotion || 'Neutral'} onChange={(v) => set('emotion', v)} options={EMOTIONS} />
+      </div>
+      <label className="area"><span>Notes</span><textarea value={draft.notes || ''} onChange={(e) => set('notes', e.target.value)} /></label>
+      <div className="pnlPreview">
+        <span>Calculated P&L</span>
+        <b className={makeTrade(draft).profit >= 0 ? 'green' : 'red'}>{money(makeTrade(draft).profit)}</b>
+      </div>
+    </div>
+  );
+}
+
+function Modal({ children, onClose, className = '' }) {
+  return (
+    <div className="modalBackdrop" onClick={onClose}>
+      <div className={`modalPanel ${className}`} onClick={(e) => e.stopPropagation()}>{children}</div>
+    </div>
+  );
+}
+
+function Info({ label, value, wide = false }) {
+  return <div className={wide ? 'info wideInfo' : 'info'}><span>{label}</span><b>{value}</b></div>;
 }
 
 async function parseSheetFile(file) {
@@ -943,6 +1191,62 @@ function parseTradeText(text, forced = 'AUTO') {
     seen.add(key);
     return true;
   });
+}
+
+function inferForexSession(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return 'Unassigned';
+  const hour = date.getUTCHours() + date.getUTCMinutes() / 60;
+  const london = isEuropeDst(date) ? [7, 16] : [8, 17];
+  const ny = isUsDst(date) ? [12, 21] : [13, 22];
+  const sydney = isAustraliaDst(date) ? [21, 6] : [22, 7];
+  const sessions = [
+    ['New York', ny],
+    ['London', london],
+    ['Tokyo', [0, 9]],
+    ['Sydney', sydney],
+  ];
+  return sessions.find(([, range]) => inUtcWindow(hour, range[0], range[1]))?.[0] || 'Unassigned';
+}
+
+function inUtcWindow(hour, start, end) {
+  return start < end ? hour >= start && hour < end : hour >= start || hour < end;
+}
+
+function isEuropeDst(date) {
+  const year = date.getUTCFullYear();
+  return date >= lastSundayUtc(year, 2, 1) && date < lastSundayUtc(year, 9, 1);
+}
+
+function isUsDst(date) {
+  const year = date.getUTCFullYear();
+  return date >= nthSundayUtc(year, 2, 2, 7) && date < nthSundayUtc(year, 10, 1, 6);
+}
+
+function isAustraliaDst(date) {
+  const year = date.getUTCFullYear();
+  const start = firstSundayUtc(year, 9, 16);
+  const end = firstSundayUtc(year + 1, 3, 16);
+  const previousStart = firstSundayUtc(year - 1, 9, 16);
+  const currentEnd = firstSundayUtc(year, 3, 16);
+  return (date >= start && date < end) || (date >= previousStart && date < currentEnd);
+}
+
+function lastSundayUtc(year, month, hour = 0) {
+  const date = new Date(Date.UTC(year, month + 1, 0, hour));
+  date.setUTCDate(date.getUTCDate() - date.getUTCDay());
+  return date;
+}
+
+function firstSundayUtc(year, month, hour = 0) {
+  return nthSundayUtc(year, month, 1, hour);
+}
+
+function nthSundayUtc(year, month, nth, hour = 0) {
+  const date = new Date(Date.UTC(year, month, 1, hour));
+  const offset = (7 - date.getUTCDay()) % 7;
+  date.setUTCDate(1 + offset + (nth - 1) * 7);
+  return date;
 }
 
 function normalizePayout(value, amount, income) {
@@ -1167,6 +1471,14 @@ function money(value) {
 
 function sum(rows, key) {
   return rows.reduce((total, row) => total + toNumber(row[key]), 0);
+}
+
+function average(values) {
+  return values.length ? values.reduce((total, value) => total + toNumber(value), 0) / values.length : 0;
+}
+
+function winRate(trades) {
+  return trades.length ? trades.filter((trade) => trade.result === 'WIN').length / trades.length * 100 : 0;
 }
 
 function csvCell(value) {
