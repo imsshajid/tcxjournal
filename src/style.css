@@ -457,7 +457,14 @@ main {
   gap: 8px;
 }
 
-.twoBtns button {
+.threeBtns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.twoBtns button,
+.threeBtns button {
   min-height: 48px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -466,16 +473,29 @@ main {
   font-weight: 800;
 }
 
-.twoBtns .selected.up {
+.twoBtns .selected.up,
+.threeBtns .selected.win {
   color: var(--green);
   border-color: rgba(53, 212, 154, .45);
   background: rgba(53, 212, 154, .1);
 }
 
-.twoBtns .selected.dn {
+.twoBtns .selected.dn,
+.threeBtns .selected.loss {
   color: var(--red);
   border-color: rgba(246, 95, 111, .45);
   background: rgba(246, 95, 111, .1);
+}
+
+.threeBtns .selected.draw {
+  color: #d7b56d;
+  border-color: rgba(215, 181, 109, .45);
+  background: rgba(215, 181, 109, .1);
+}
+
+.outcomeChooser {
+  display: grid;
+  gap: 8px;
 }
 
 .fields {
@@ -484,7 +504,7 @@ main {
   gap: 10px;
 }
 
-.field span, .area span, .settingsRows span {
+.field span, .area span, .settingsRows span, .outcomeChooser > span {
   display: block;
   margin-bottom: 5px;
   color: var(--muted);
@@ -702,7 +722,7 @@ main {
   .titleBlock { width: calc(100% - 52px); }
   .actions { width: 100%; }
   .segmented { overflow-x: auto; max-width: 100%; }
-  .metrics, .uploadGrid, .twoBtns { grid-template-columns: 1fr; }
+  .metrics, .uploadGrid, .twoBtns, .threeBtns { grid-template-columns: 1fr; }
   .cal { grid-template-columns: repeat(4, 1fr); }
   .weekHeader { display: none; }
   .day { min-height: 58px; }
@@ -774,6 +794,7 @@ body {
 .segmented,
 .uploadTile,
 .twoBtns button,
+.threeBtns button,
 .pnlPreview,
 .info,
 .queueItem,

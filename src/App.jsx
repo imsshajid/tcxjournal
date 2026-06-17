@@ -51,9 +51,11 @@ const DEFAULT_SETTINGS = {
   ocrMode: 'AUTO',
 };
 const IMPORT_LATER_KEY = 'tcxjournal.importLater.v1';
-const STRATEGIES = ['Support & Resistance', 'Trend Following', 'Breakout', 'Reversal', 'Scalping', 'News Trading', 'Fibonacci', 'Moving Average', 'Bollinger Bands', 'RSI Divergence', 'OTC Strategy', 'Imported', 'Screenshot', 'Unclassified'];
+const STRATEGIES = ['Unclassified', 'Signal Following', 'Stochastic', 'Price Action', 'Support & Resistance', 'Trend Following', 'Breakout', 'Reversal', 'Scalping', 'News Trading', 'Fibonacci', 'Moving Average', 'Bollinger Bands', 'RSI Divergence', 'OTC Strategy'];
 const EMOTIONS = ['Calm', 'Confident', 'Anxious', 'Fearful', 'Greedy', 'Revenge', 'Bored', 'Focused', 'Patient', 'Neutral'];
 const TIMEFRAMES = ['10s', '15s', '30s', '1m', '2m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
+const SESSION_OPTIONS = ['Sydney', 'Tokyo', 'London', 'New York'];
+const OUTCOME_LABELS = { WIN: 'Profit', LOSS: 'Loss', DRAW: 'Draw' };
 
 const seedTrades = [
   makeTrade({
@@ -145,8 +147,8 @@ function makeTrade(input) {
     openedAt: toIso(input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
     closedAt: toIso(input.closedAt || input.closingTime || input.closing_time_utc || input.close_time),
     duration: input.duration || input.timeframe || durationBetween(input.openedAt || input.openingTime, input.closedAt || input.closingTime),
-    strategy: input.strategy || 'Unclassified',
-    session: input.session || inferForexSession(input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
+    strategy: normalizeStrategy(input.strategy),
+    session: normalizeSession(input.session, input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
     emotion: input.emotion || 'Neutral',
     closeReason: title(input.closeReason || input.close_reason || ''),
     commission: cleanNumber(input.commission),
@@ -478,7 +480,7 @@ function ResultPanel({ trades }) {
 
 function OutcomePanel({ trades }) {
   const data = [
-    { name: 'Win', value: trades.filter((t) => t.result === 'WIN').length, color: '#35d49a' },
+    { name: 'Profit', value: trades.filter((t) => t.result === 'WIN').length, color: '#35d49a' },
     { name: 'Loss', value: trades.filter((t) => t.result === 'LOSS').length, color: '#f65f6f' },
     { name: 'Draw', value: trades.filter((t) => t.result === 'DRAW').length, color: '#d7b56d' },
   ];
@@ -509,8 +511,7 @@ function OutcomePanel({ trades }) {
         </ResponsiveContainer>
       </div>
       <div className="outcomeStats">
-        <Info label="Win rate" value={`${winRate(trades).toFixed(1)}%`} />
-        <Info label="Avg win" value={money(average(wins))} />
+        <Info label="Avg profit" value={money(average(wins))} />
         <Info label="Avg loss" value={money(-average(losses))} />
         <Info label="Best asset" value={bestAsset ? `${bestAsset[0]} ${money(bestAsset[1].pnl)}` : '-'} />
         <Info label="Most traded" value={busiestAsset ? `${busiestAsset[0]} (${busiestAsset[1].count})` : '-'} />
@@ -790,7 +791,12 @@ function Importer({ onImport, settings }) {
     }
   }
 
-  const updateDraft = (id, key, value) => setDrafts((current) => current.map((trade) => trade.id === id ? makeTrade({ ...trade, [key]: value }) : trade));
+  const updateDraft = (id, key, value) => setDrafts((current) => current.map((trade) => {
+    if (trade.id !== id) return trade;
+    const next = { ...trade, [key]: value };
+    if (key === 'openedAt') next.session = inferForexSession(value);
+    return makeTrade(next);
+  }));
   const saveDrafts = () => {
     const result = onImport(drafts);
     setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.`);
@@ -999,6 +1005,7 @@ function TradeDetailModal({ trade, onClose, onEdit, onDelete }) {
         <Info label="Open price" value={trade.open || '-'} />
         <Info label="Close price" value={trade.close || '-'} />
         <Info label={trade.market === 'FTT' ? 'Stake' : 'Lot'} value={trade.amount} />
+        <Info label="Result" value={OUTCOME_LABELS[trade.result] || trade.result} />
         <Info label="Payout" value={trade.market === 'FTT' ? `${trade.payout || 90}%` : trade.closeReason || '-'} />
         {!!trade.notes && <Info label="Notes" value={trade.notes} wide />}
       </div>
@@ -1058,7 +1065,7 @@ function TradeFormFields({ draft, set }) {
         {isFtt ? (
           <>
             <Input label="Payout %" type="number" value={draft.payout} onChange={(v) => set('payout', v)} />
-            <Input label="Result" type="number" value={draft.income} onChange={(v) => set('income', v)} />
+            <Input label="Result amount" type="number" value={draft.income} onChange={(v) => set('income', v)} />
           </>
         ) : (
           <Input label="P/L" type="number" value={draft.profit} onChange={(v) => set('profit', v)} />
@@ -1067,13 +1074,49 @@ function TradeFormFields({ draft, set }) {
         <Input label="Exit price" value={draft.close} onChange={(v) => set('close', v)} />
         <Select label="Strategy" value={draft.strategy} onChange={(v) => set('strategy', v)} options={STRATEGIES} />
         <Select label="Timeframe" value={draft.duration || '1m'} onChange={(v) => set('duration', v)} options={TIMEFRAMES} />
-        <Select label="Session" value={draft.session || inferForexSession(draft.openedAt)} onChange={(v) => set('session', v)} options={['Sydney', 'Tokyo', 'London', 'New York', 'Unassigned']} />
+        <Select label="Session" value={normalizeSession(draft.session, draft.openedAt)} onChange={(v) => set('session', v)} options={SESSION_OPTIONS} />
         <Select label="Emotion" value={draft.emotion || 'Neutral'} onChange={(v) => set('emotion', v)} options={EMOTIONS} />
       </div>
+      <OutcomeChooser draft={draft} set={set} />
       <label className="area"><span>Notes</span><textarea value={draft.notes || ''} onChange={(e) => set('notes', e.target.value)} /></label>
       <div className="pnlPreview">
         <span>Calculated P&L</span>
         <b className={makeTrade(draft).profit >= 0 ? 'green' : 'red'}>{money(makeTrade(draft).profit)}</b>
+      </div>
+    </div>
+  );
+}
+
+function OutcomeChooser({ draft, set }) {
+  const trade = makeTrade(draft);
+  const choose = (result) => {
+    if (draft.market === 'FTT') {
+      const amount = Math.abs(toNumber(draft.amount));
+      const payout = toNumber(draft.payout) || 90;
+      const income = result === 'WIN'
+        ? round(amount + (amount * payout / 100))
+        : result === 'LOSS'
+          ? 0
+          : amount;
+      set('income', income);
+      return;
+    }
+    const size = Math.abs(toNumber(draft.profit)) || 1;
+    set('profit', result === 'WIN' ? size : result === 'LOSS' ? -size : 0);
+  };
+  return (
+    <div className="outcomeChooser">
+      <span>Result</span>
+      <div className="threeBtns">
+        {['WIN', 'LOSS', 'DRAW'].map((result) => (
+          <button
+            key={result}
+            className={trade.result === result ? `selected ${result.toLowerCase()}` : ''}
+            onClick={() => choose(result)}
+          >
+            {OUTCOME_LABELS[result]}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -1120,7 +1163,7 @@ function mapFttRow(row) {
     close: get('Close Price'),
     openedAt: get('Open time'),
     closedAt: get('Close Time'),
-    strategy: 'Imported',
+    strategy: 'Unclassified',
   });
 }
 
@@ -1135,14 +1178,14 @@ function mapCfdRow(row) {
     amount: get('lots') || get('original_position_size'),
     open: get('opening_price'),
     close: get('closing_price'),
-    openedAt: get('opening_time_utc'),
-    closedAt: get('closing_time_utc'),
+    openedAt: toIso(get('opening_time_utc'), 'utc'),
+    closedAt: toIso(get('closing_time_utc'), 'utc'),
     profit: get('profit'),
     closeReason: get('close_reason'),
     commission: get('commission'),
     swap: get('swap'),
     equity: get('equity'),
-    strategy: 'Imported',
+    strategy: 'Unclassified',
   });
 }
 
@@ -1209,7 +1252,7 @@ function parseTradeText(text, forced = 'AUTO') {
           close: prices[1],
           openedAt: parseVisibleDate(block) || new Date().toISOString(),
           closedAt: parseVisibleDate(block) || new Date().toISOString(),
-          strategy: 'Screenshot',
+          strategy: 'Unclassified',
           notes: 'Imported from screenshot.',
         }));
         i += 4;
@@ -1240,7 +1283,7 @@ function parseTradeText(text, forced = 'AUTO') {
           closedAt: parseVisibleDate(block) || new Date().toISOString(),
           profit: pl[1],
           closeReason: /stop\s*out/i.test(block) ? 'Stop out' : /stop\s*loss/i.test(block) ? 'Stop loss' : '',
-          strategy: 'Screenshot',
+          strategy: 'Unclassified',
           notes: 'Imported from screenshot.',
         }));
         i += 4;
@@ -1257,9 +1300,21 @@ function parseTradeText(text, forced = 'AUTO') {
   });
 }
 
+function normalizeStrategy(value) {
+  const strategy = clean(value);
+  if (!strategy || /^(imported|screenshot)$/i.test(strategy)) return 'Unclassified';
+  return STRATEGIES.includes(strategy) ? strategy : strategy;
+}
+
+function normalizeSession(value, dateValue) {
+  const session = title(value);
+  if (SESSION_OPTIONS.includes(session)) return session;
+  return inferForexSession(dateValue);
+}
+
 function inferForexSession(value) {
   const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return 'Unassigned';
+  if (Number.isNaN(date.getTime())) return inferForexSession(new Date());
   const hour = date.getUTCHours() + date.getUTCMinutes() / 60;
   const london = isEuropeDst(date) ? [7, 16] : [8, 17];
   const ny = isUsDst(date) ? [12, 21] : [13, 22];
@@ -1270,7 +1325,7 @@ function inferForexSession(value) {
     ['Tokyo', [0, 9]],
     ['Sydney', sydney],
   ];
-  return sessions.find(([, range]) => inUtcWindow(hour, range[0], range[1]))?.[0] || 'Unassigned';
+  return sessions.find(([, range]) => inUtcWindow(hour, range[0], range[1]))?.[0] || 'New York';
 }
 
 function inUtcWindow(hour, start, end) {
@@ -1318,8 +1373,8 @@ function normalizePayout(value, amount, income) {
   if (explicit) return explicit;
   const stake = Math.abs(toNumber(amount));
   const resultAmount = Math.abs(toNumber(income));
-  if (!stake || !resultAmount) return 90;
-  const calculated = resultAmount > stake ? ((resultAmount - stake) / stake) * 100 : (resultAmount / stake) * 100;
+  if (!stake || resultAmount <= stake) return 90;
+  const calculated = ((resultAmount - stake) / stake) * 100;
   return Number.isFinite(calculated) && calculated > 0 ? Math.round(calculated) : 90;
 }
 
@@ -1428,13 +1483,20 @@ function parseVisibleDate(text) {
   return '';
 }
 
-function toIso(value) {
-  if (!value) return new Date().toISOString();
-  if (value instanceof Date) return value.toISOString();
-  const text = String(value).trim().replace(' ', 'T');
-  const date = new Date(text);
+function toIso(value, zone = 'local') {
+  const date = parseTradeDate(value, zone);
   if (!Number.isNaN(date.getTime())) return date.toISOString();
   return new Date().toISOString();
+}
+
+function parseTradeDate(value, zone = 'local') {
+  if (!value) return new Date();
+  if (value instanceof Date) return value;
+  const text = String(value).trim();
+  if (!text) return new Date();
+  const normalized = text.replace(' ', 'T');
+  if (/([zZ]|[+-]\d{2}:?\d{2})$/.test(normalized)) return new Date(normalized);
+  return new Date(zone === 'utc' ? `${normalized}Z` : normalized);
 }
 
 function inputDateTime(value = new Date()) {
@@ -1445,15 +1507,15 @@ function inputDateTime(value = new Date()) {
 }
 
 function dateKey(value) {
-  if (value instanceof Date) {
-    return [
-      value.getFullYear(),
-      String(value.getMonth() + 1).padStart(2, '0'),
-      String(value.getDate()).padStart(2, '0'),
-    ].join('-');
-  }
-  if (/^\d{4}-\d{2}-\d{2}/.test(String(value))) return String(value).slice(0, 10);
-  return new Date(value).toISOString().slice(0, 10);
+  const text = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
 }
 
 function formatDate(value) {
