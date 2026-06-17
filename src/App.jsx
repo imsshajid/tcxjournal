@@ -986,12 +986,70 @@ function AssetSelect({ value, onChange, market }) {
   const normalizedValue = normalizeAsset(value);
   const allOptions = options.includes(normalizedValue) || !normalizedValue ? options : [normalizedValue, ...options];
   const selectValue = normalizedValue || allOptions[0];
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const boxRef = useRef(null);
+  const needle = query.trim().toLowerCase();
+  const visibleOptions = allOptions
+    .filter((option) => !needle || option.toLowerCase().replace(/[^a-z0-9]+/g, '').includes(needle.replace(/[^a-z0-9]+/g, '')) || option.toLowerCase().includes(needle))
+    .slice(0, 60);
+
+  useEffect(() => {
+    const close = (event) => {
+      if (!boxRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, []);
+
+  const pick = (asset) => {
+    onChange(asset);
+    setQuery('');
+    setOpen(false);
+  };
+
   return (
-    <label className="field assetSelect">
+    <label className="field assetSelect" ref={boxRef}>
       <span>Asset</span>
-      <select value={selectValue} onChange={(e) => onChange(e.target.value)}>
-        {allOptions.map((option) => <option key={option}>{option}</option>)}
-      </select>
+      <div className="assetCombobox">
+        <input
+          aria-label="Search asset"
+          value={open ? query : selectValue}
+          placeholder={selectValue}
+          onFocus={() => {
+            setOpen(true);
+            setQuery('');
+          }}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && visibleOptions[0]) {
+              event.preventDefault();
+              pick(visibleOptions[0]);
+            }
+            if (event.key === 'Escape') setOpen(false);
+          }}
+        />
+        <ChevronDown size={16} />
+        {open && (
+          <div className="assetMenu">
+            {visibleOptions.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={option === selectValue ? 'assetOption selected' : 'assetOption'}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => pick(option)}
+              >
+                {option}
+              </button>
+            ))}
+            {!visibleOptions.length && <p>No asset found</p>}
+          </div>
+        )}
+      </div>
     </label>
   );
 }
