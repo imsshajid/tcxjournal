@@ -2,17 +2,18 @@
 
 :root {
   color-scheme: dark;
-  --bg: #080b0f;
-  --panel: #101720;
-  --panel-2: #0d131b;
-  --line: rgba(231, 238, 249, .09);
-  --text: #eef4ff;
-  --muted: #93a1b5;
-  --dim: #627086;
-  --green: #35d49a;
-  --red: #f65f6f;
-  --blue: #6aa9ff;
-  --gold: #d7b56d;
+  --bg: #05070d;
+  --panel: #0e1622;
+  --panel-2: #0a111b;
+  --line: rgba(203, 213, 225, .14);
+  --text: #f2f6fd;
+  --muted: #9aa8bb;
+  --dim: #66758b;
+  --green: #10b981;
+  --red: #f43f5e;
+  --blue: #3b82f6;
+  --gold: #f59e0b;
+  --cyan: #06b6d4;
   --radius: 8px;
   --sidebar: 248px;
 }
@@ -61,8 +62,8 @@ button:disabled { cursor: progress; opacity: .72; }
   display: grid;
   place-items: center;
   border-radius: var(--radius);
-  background: #35d49a;
-  color: #06100d;
+  background: #1d4ed8;
+  color: #eff6ff;
   font-weight: 800;
 }
 
@@ -200,8 +201,8 @@ main {
 }
 
 .segmented button.on {
-  color: #06100d;
-  background: var(--green);
+  color: #eff6ff;
+  background: #1d4ed8;
 }
 
 .primary, .soft, .uploadBtn {
@@ -220,9 +221,10 @@ main {
 }
 
 .primary {
-  border-color: transparent;
-  color: #06100d;
-  background: var(--green);
+  border-color: rgba(59, 130, 246, .72);
+  color: #eff6ff;
+  background: #2563eb;
+  box-shadow: 0 12px 30px rgba(37, 99, 235, .24);
 }
 
 .page {
@@ -493,6 +495,7 @@ main {
   background: rgba(215, 181, 109, .1);
 }
 
+.directionChooser,
 .outcomeChooser {
   display: grid;
   gap: 8px;
@@ -504,7 +507,7 @@ main {
   gap: 10px;
 }
 
-.field span, .area span, .settingsRows span, .outcomeChooser > span {
+.field span, .area span, .settingsRows span, .directionChooser > span, .outcomeChooser > span {
   display: block;
   margin-bottom: 5px;
   color: var(--muted);
@@ -732,10 +735,9 @@ main {
 /* Liquid material pass */
 body {
   background:
-    radial-gradient(900px 420px at 76% -12%, rgba(93, 210, 255, .15), transparent 58%),
-    radial-gradient(760px 360px at 16% 0%, rgba(137, 87, 255, .18), transparent 60%),
-    radial-gradient(560px 420px at 82% 80%, rgba(53, 212, 154, .10), transparent 62%),
-    linear-gradient(145deg, #05070c, #080d15 48%, #05080c);
+    linear-gradient(160deg, rgba(14, 165, 233, .12), transparent 34%),
+    linear-gradient(22deg, rgba(16, 185, 129, .10), transparent 32%),
+    linear-gradient(180deg, #070a12, #06111b 48%, #05070d);
 }
 
 .card,
@@ -744,11 +746,11 @@ body {
 .modalPanel,
 .bottomNav {
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .028)),
-    rgba(9, 14, 21, .72);
-  border-color: rgba(226, 238, 255, .13);
-  box-shadow: 0 22px 80px rgba(0, 0, 0, .34), inset 0 1px rgba(255, 255, 255, .08);
-  backdrop-filter: blur(24px) saturate(145%);
+    linear-gradient(145deg, rgba(255, 255, 255, .095), rgba(255, 255, 255, .035)),
+    rgba(10, 16, 25, .76);
+  border-color: rgba(203, 213, 225, .18);
+  box-shadow: 0 24px 90px rgba(0, 0, 0, .42), inset 0 1px rgba(255, 255, 255, .10);
+  backdrop-filter: blur(28px) saturate(165%);
 }
 
 .card {
@@ -762,8 +764,8 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(135deg, rgba(255,255,255,.12), transparent 34%, rgba(255,255,255,.025) 68%, transparent);
-  opacity: .42;
+  background: linear-gradient(135deg, rgba(255,255,255,.14), transparent 30%, rgba(14,165,233,.035) 66%, transparent);
+  opacity: .48;
 }
 
 .card > *,
@@ -771,12 +773,10 @@ body {
   position: relative;
 }
 
-.mark,
-.brandLogo,
 .primary,
 .segmented button.on {
-  background: linear-gradient(135deg, #44e7a5, #63b3ff 58%, #a46cff);
-  box-shadow: 0 12px 30px rgba(68, 231, 165, .18);
+  background: #2563eb;
+  box-shadow: 0 14px 34px rgba(37, 99, 235, .28);
 }
 
 .brandLogo {

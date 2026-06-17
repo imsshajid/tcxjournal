@@ -55,7 +55,27 @@ const STRATEGIES = ['Unclassified', 'Signal Following', 'Stochastic', 'Price Act
 const EMOTIONS = ['Calm', 'Confident', 'Anxious', 'Fearful', 'Greedy', 'Revenge', 'Bored', 'Focused', 'Patient', 'Neutral'];
 const TIMEFRAMES = ['10s', '15s', '30s', '1m', '2m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
 const SESSION_OPTIONS = ['Sydney', 'Tokyo', 'London', 'New York'];
-const OUTCOME_LABELS = { WIN: 'Profit', LOSS: 'Loss', DRAW: 'Draw' };
+const OUTCOME_LABELS = { WIN: 'Profit', LOSS: 'Loss', DRAW: 'Refund' };
+const FTT_ASSETS = [
+  'AUD/CAD', 'AUD/CHF', 'AUD/JPY', 'AUD/NZD', 'AUD/USD', 'CAD/CHF', 'CAD/JPY', 'CHF/JPY',
+  'EUR/AUD', 'EUR/CAD', 'EUR/CHF', 'EUR/GBP', 'EUR/JPY', 'EUR/NZD', 'EUR/USD',
+  'GBP/AUD', 'GBP/CAD', 'GBP/CHF', 'GBP/JPY', 'GBP/NZD', 'GBP/USD',
+  'NZD/CAD', 'NZD/CHF', 'NZD/JPY', 'NZD/USD', 'USD/BRL', 'USD/CAD', 'USD/CHF', 'USD/JPY', 'USD/MXN', 'USD/TRY', 'USD/ZAR',
+  'AUD/CAD (OTC)', 'AUD/CHF (OTC)', 'AUD/JPY (OTC)', 'AUD/NZD (OTC)', 'AUD/USD (OTC)',
+  'CAD/CHF (OTC)', 'CAD/JPY (OTC)', 'CHF/JPY (OTC)', 'EUR/AUD (OTC)', 'EUR/CAD (OTC)', 'EUR/CHF (OTC)', 'EUR/GBP (OTC)', 'EUR/JPY (OTC)', 'EUR/NZD (OTC)', 'EUR/USD (OTC)',
+  'GBP/AUD (OTC)', 'GBP/CAD (OTC)', 'GBP/CHF (OTC)', 'GBP/JPY (OTC)', 'GBP/NZD (OTC)', 'GBP/USD (OTC)',
+  'NZD/CAD (OTC)', 'NZD/CHF (OTC)', 'NZD/JPY (OTC)', 'NZD/USD (OTC)',
+  'USD/ARS (OTC)', 'USD/BDT (OTC)', 'USD/BRL (OTC)', 'USD/COP (OTC)', 'USD/DZD (OTC)', 'USD/EGP (OTC)', 'USD/IDR (OTC)', 'USD/INR (OTC)', 'USD/MXN (OTC)', 'USD/NGN (OTC)', 'USD/PKR (OTC)', 'USD/PHP (OTC)', 'USD/TRY (OTC)', 'USD/ZAR (OTC)',
+  'XAU/USD (OTC)', 'XAG/USD (OTC)', 'Bitcoin (OTC)', 'Ethereum (OTC)', 'Litecoin (OTC)', 'Dogecoin (OTC)', 'Solana (OTC)', 'Cardano (OTC)', 'Ripple (OTC)', 'Toncoin (OTC)', 'Polkadot (OTC)', 'Chainlink (OTC)', 'Binance Coin (OTC)',
+  'Apple (OTC)', 'Amazon (OTC)', 'Tesla (OTC)', 'Microsoft (OTC)', 'Meta (OTC)', 'Netflix (OTC)', 'Alibaba (OTC)', 'McDonalds (OTC)',
+  'US 100 (OTC)', 'US 500 (OTC)', 'US 30 (OTC)', 'UK 100 (OTC)', 'Germany 40 (OTC)', 'Hong Kong 50 (OTC)',
+];
+const CFD_ASSETS = [
+  'XAU/USD', 'XAG/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'USD/CHF', 'NZD/USD', 'EUR/JPY', 'GBP/JPY', 'AUD/JPY',
+  'BTC/USD', 'ETH/USD', 'LTC/USD', 'XRP/USD', 'BNB/USD', 'SOL/USD',
+  'NAS100', 'US30', 'SPX500', 'GER40', 'UK100', 'JP225', 'HK50',
+  'USOIL', 'BRENT', 'NATGAS',
+];
 
 const seedTrades = [
   makeTrade({
@@ -124,18 +144,20 @@ const seedTrades = [
 function makeTrade(input) {
   const market = input.market || 'FTT';
   const amount = toNumber(input.amount);
-  const hasFttResult = input.income !== undefined || input.resultAmount !== undefined;
-  const income = input.income === undefined ? input.resultAmount : input.income;
+  const desiredResult = input.result ? normalizeTradeResult(input.result) : input.profit !== undefined ? tradeResult(input.profit) : 'WIN';
+  const explicitIncome = input.income === undefined ? input.resultAmount : input.income;
+  const hasFttResult = explicitIncome !== undefined && explicitIncome !== '';
+  const income = hasFttResult ? explicitIncome : deriveFttIncome(amount, input.payout, desiredResult);
   const netProfit =
     market === 'FTT'
-      ? hasFttResult ? calculateFttNet(amount, income) : toNumber(input.profit)
+      ? calculateFttNet(amount, income)
       : toNumber(input.profit);
   return {
     id: input.id || crypto.randomUUID(),
     sourceId: clean(input.sourceId || input.ticket || input.positionId || input.ID || ''),
     market,
     account: input.account || (market === 'FTT' ? 'Quotex' : 'CFD'),
-    asset: normalizeAsset(input.asset || input.symbol || input.info || ''),
+    asset: normalizeAsset(input.asset || input.symbol || input.info || assetOptionsForMarket(market)[0] || ''),
     direction: normalizeDirection(input.direction || input.type || ''),
     amount,
     income: market === 'FTT' ? toNumber(income) : '',
@@ -480,9 +502,9 @@ function ResultPanel({ trades }) {
 
 function OutcomePanel({ trades }) {
   const data = [
-    { name: 'Profit', value: trades.filter((t) => t.result === 'WIN').length, color: '#35d49a' },
-    { name: 'Loss', value: trades.filter((t) => t.result === 'LOSS').length, color: '#f65f6f' },
-    { name: 'Draw', value: trades.filter((t) => t.result === 'DRAW').length, color: '#d7b56d' },
+    { name: 'Profit', value: trades.filter((t) => t.result === 'WIN').length, color: '#10b981' },
+    { name: 'Loss', value: trades.filter((t) => t.result === 'LOSS').length, color: '#f43f5e' },
+    { name: 'Refund', value: trades.filter((t) => t.result === 'DRAW').length, color: '#f59e0b' },
   ];
   const assets = Object.entries(trades.reduce((acc, trade) => {
     acc[trade.asset] = acc[trade.asset] || { pnl: 0, count: 0 };
@@ -684,9 +706,9 @@ function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
     asset: 'USD/JPY',
     direction: 'UP',
     amount: 10,
-    income: 19,
     payout: 90,
     profit: 9,
+    result: 'WIN',
     open: '',
     close: '',
     openedAt: inputDateTime(),
@@ -700,17 +722,19 @@ function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
   const set = (key, value) => setForm((current) => {
     const next = { ...current, [key]: value };
     if (key === 'openedAt') next.session = inferForexSession(value);
-    if (key === 'income' || key === 'amount') next.payout = normalizePayout('', key === 'amount' ? value : next.amount, key === 'income' ? value : next.income);
+    if (key === 'result') next.income = '';
     return next;
   });
   const switchMarket = (next) => {
     setMarket(next);
     setForm((current) => ({
       ...current,
+      asset: assetOptionsForMarket(next).includes(normalizeAsset(current.asset)) ? normalizeAsset(current.asset) : assetOptionsForMarket(next)[0],
       account: next === 'FTT' ? 'Quotex' : 'MT5',
       direction: next === 'FTT' ? 'UP' : 'BUY',
       payout: next === 'FTT' ? current.payout || 90 : '',
-      income: next === 'FTT' ? current.income || 0 : '',
+      income: next === 'FTT' ? '' : current.income,
+      result: next === 'FTT' ? normalizeTradeResult(current.result) : current.result,
     }));
   };
   const save = () => {
@@ -795,6 +819,7 @@ function Importer({ onImport, settings }) {
     if (trade.id !== id) return trade;
     const next = { ...trade, [key]: value };
     if (key === 'openedAt') next.session = inferForexSession(value);
+    if (key === 'result') next.income = '';
     return makeTrade(next);
   }));
   const saveDrafts = () => {
@@ -956,12 +981,27 @@ function Select({ label, value, onChange, options }) {
   return <label className="field"><span>{label}</span><select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select></label>;
 }
 
+function AssetSelect({ value, onChange, market }) {
+  const options = assetOptionsForMarket(market);
+  const normalizedValue = normalizeAsset(value);
+  const allOptions = options.includes(normalizedValue) || !normalizedValue ? options : [normalizedValue, ...options];
+  const selectValue = normalizedValue || allOptions[0];
+  return (
+    <label className="field assetSelect">
+      <span>Asset</span>
+      <select value={selectValue} onChange={(e) => onChange(e.target.value)}>
+        {allOptions.map((option) => <option key={option}>{option}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function TradeEditorModal({ trade, onClose, onSave, onDelete }) {
   const [draft, setDraft] = useState(() => ({ ...makeTrade(trade), openedAt: inputDateTime(trade.openedAt), closedAt: inputDateTime(trade.closedAt) }));
   const set = (key, value) => setDraft((current) => {
     const next = { ...current, [key]: value };
     if (key === 'openedAt') next.session = inferForexSession(value);
-    if (key === 'income' || key === 'amount') next.payout = normalizePayout('', key === 'amount' ? value : next.amount, key === 'income' ? value : next.income);
+    if (key === 'result') next.income = '';
     return next;
   });
   return (
@@ -1048,25 +1088,31 @@ function DayTradesModal({ date, trades, onClose, onOpenTrade }) {
 
 function TradeFormFields({ draft, set }) {
   const isFtt = draft.market === 'FTT';
+  const previewTrade = makeTrade(draft);
   return (
     <div className="form">
-      <div className="twoBtns">
-        <button className={['UP', 'BUY'].includes(draft.direction) ? 'selected up' : ''} onClick={() => set('direction', isFtt ? 'UP' : 'BUY')}>
-          {isFtt ? 'CALL (Up)' : 'BUY'}
-        </button>
-        <button className={['DOWN', 'SELL'].includes(draft.direction) ? 'selected dn' : ''} onClick={() => set('direction', isFtt ? 'DOWN' : 'SELL')}>
-          {isFtt ? 'PUT (Down)' : 'SELL'}
-        </button>
+      <div className="directionChooser">
+        <span>Direction</span>
+        <div className="twoBtns">
+          <button className={['UP', 'BUY'].includes(draft.direction) ? 'selected up' : ''} onClick={() => set('direction', isFtt ? 'UP' : 'BUY')}>
+            Buy
+          </button>
+          <button className={['DOWN', 'SELL'].includes(draft.direction) ? 'selected dn' : ''} onClick={() => set('direction', isFtt ? 'DOWN' : 'SELL')}>
+            Sell
+          </button>
+        </div>
+      </div>
+      <OutcomeChooser draft={draft} set={set} />
+      <div className="pnlPreview">
+        <span>Calculated P&L</span>
+        <b className={previewTrade.profit >= 0 ? 'green' : 'red'}>{money(previewTrade.profit)}</b>
       </div>
       <div className="fields">
-        <Input label="Asset" value={draft.asset} onChange={(v) => set('asset', v)} />
+        <AssetSelect value={draft.asset} market={draft.market} onChange={(v) => set('asset', v)} />
         <Input label="Trade date" type="datetime-local" value={inputDateTime(draft.openedAt)} onChange={(v) => set('openedAt', v)} />
         <Input label={isFtt ? 'Amount ($)' : 'Lot'} type="number" value={draft.amount} onChange={(v) => set('amount', v)} />
         {isFtt ? (
-          <>
-            <Input label="Payout %" type="number" value={draft.payout} onChange={(v) => set('payout', v)} />
-            <Input label="Result amount" type="number" value={draft.income} onChange={(v) => set('income', v)} />
-          </>
+          <Input label="Payout %" type="number" value={draft.payout} onChange={(v) => set('payout', v)} />
         ) : (
           <Input label="P/L" type="number" value={draft.profit} onChange={(v) => set('profit', v)} />
         )}
@@ -1077,12 +1123,7 @@ function TradeFormFields({ draft, set }) {
         <Select label="Session" value={normalizeSession(draft.session, draft.openedAt)} onChange={(v) => set('session', v)} options={SESSION_OPTIONS} />
         <Select label="Emotion" value={draft.emotion || 'Neutral'} onChange={(v) => set('emotion', v)} options={EMOTIONS} />
       </div>
-      <OutcomeChooser draft={draft} set={set} />
       <label className="area"><span>Notes</span><textarea value={draft.notes || ''} onChange={(e) => set('notes', e.target.value)} /></label>
-      <div className="pnlPreview">
-        <span>Calculated P&L</span>
-        <b className={makeTrade(draft).profit >= 0 ? 'green' : 'red'}>{money(makeTrade(draft).profit)}</b>
-      </div>
     </div>
   );
 }
@@ -1091,14 +1132,7 @@ function OutcomeChooser({ draft, set }) {
   const trade = makeTrade(draft);
   const choose = (result) => {
     if (draft.market === 'FTT') {
-      const amount = Math.abs(toNumber(draft.amount));
-      const payout = toNumber(draft.payout) || 90;
-      const income = result === 'WIN'
-        ? round(amount + (amount * payout / 100))
-        : result === 'LOSS'
-          ? 0
-          : amount;
-      set('income', income);
+      set('result', result);
       return;
     }
     const size = Math.abs(toNumber(draft.profit)) || 1;
@@ -1306,10 +1340,22 @@ function normalizeStrategy(value) {
   return STRATEGIES.includes(strategy) ? strategy : strategy;
 }
 
+function assetOptionsForMarket(market) {
+  return market === 'CFD' ? CFD_ASSETS : FTT_ASSETS;
+}
+
 function normalizeSession(value, dateValue) {
   const session = title(value);
   if (SESSION_OPTIONS.includes(session)) return session;
   return inferForexSession(dateValue);
+}
+
+function normalizeTradeResult(value) {
+  const text = clean(value).toUpperCase();
+  if (['WIN', 'PROFIT'].includes(text)) return 'WIN';
+  if (['LOSS', 'LOSE'].includes(text)) return 'LOSS';
+  if (['DRAW', 'REFUND', 'BREAKEVEN', 'BREAK EVEN'].includes(text)) return 'DRAW';
+  return 'WIN';
 }
 
 function inferForexSession(value) {
@@ -1376,6 +1422,15 @@ function normalizePayout(value, amount, income) {
   if (!stake || resultAmount <= stake) return 90;
   const calculated = ((resultAmount - stake) / stake) * 100;
   return Number.isFinite(calculated) && calculated > 0 ? Math.round(calculated) : 90;
+}
+
+function deriveFttIncome(amount, payout, result = 'WIN') {
+  const stake = Math.abs(toNumber(amount));
+  const pct = toNumber(payout) || 90;
+  if (!stake) return 0;
+  if (result === 'LOSS') return 0;
+  if (result === 'DRAW') return stake;
+  return round(stake + (stake * pct / 100));
 }
 
 function calculateFttNet(amount, income) {
