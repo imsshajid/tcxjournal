@@ -324,8 +324,8 @@ function Sidebar({ page, setPage, open, setOpen }) {
   return (
     <aside className={open ? 'sidebar show' : 'sidebar'}>
       <div className="brand">
-        <div className="mark">TC</div>
-        <div><b>TCX Journal</b><span>FTT and CFD</span></div>
+        <img className="brandLogo" src="/tcx-logo.svg" alt="Trading Candle X Journal logo" />
+        <div><b>TCX Journal</b><span>Trading Candle X</span></div>
         <button className="closeNav" onClick={() => setOpen(false)}><X size={18} /></button>
       </div>
       <nav>
@@ -394,13 +394,14 @@ function BottomNav({ page, setPage }) {
 }
 
 function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade }) {
+  const scopedTrades = selectedDate ? selectedTrades : trades;
   const shownTrades = selectedDate ? selectedTrades : trades.slice(0, 8);
   return (
     <section className="page" onClick={() => selectedDate && clearDate()}>
-      <Stats trades={trades} />
+      <Stats trades={scopedTrades} />
       <div className="dashGrid">
-        <EquityPanel trades={trades} />
-        <ResultPanel trades={trades} />
+        <EquityPanel trades={scopedTrades} title={selectedDate ? `Equity on ${formatDate(selectedDate)}` : 'Equity Curve'} />
+        <ResultPanel trades={scopedTrades} />
         <CalendarPanel trades={trades} selectedDate={selectedDate} onDatePick={onDatePick} />
         <TradeList
           title={selectedDate ? `Trades on ${formatDate(selectedDate)}` : 'Recent Trades'}
@@ -409,7 +410,7 @@ function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate
           onOpenTrade={onOpenTrade}
           onEditTrade={onEditTrade}
         />
-        <StrategyPanel trades={trades} />
+        <StrategyPanel trades={scopedTrades} />
       </div>
     </section>
   );
@@ -443,14 +444,15 @@ function Stats({ trades }) {
   );
 }
 
-function EquityPanel({ trades }) {
+function EquityPanel({ trades, title = 'Equity Curve' }) {
   let running = 0;
+  const singleDay = trades.length > 0 && new Set(trades.map((t) => dateKey(t.openedAt))).size === 1;
   const data = [...trades]
     .sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt))
-    .map((t) => ({ date: shortDate(t.openedAt), pnl: running += toNumber(t.profit) }));
+    .map((t) => ({ date: singleDay ? timeOnly(t.openedAt) : shortDate(t.openedAt), pnl: running += toNumber(t.profit) }));
   return (
     <div className="card chartXL">
-      <PanelTitle title="Equity Curve" tag="Cumulative" />
+      <PanelTitle title={title} tag="Cumulative" />
       <ResponsiveContainer height={310}>
         <AreaChart data={data}>
           <defs>
@@ -493,16 +495,18 @@ function OutcomePanel({ trades }) {
   return (
     <div className="card outcomeCard">
       <PanelTitle title="Outcome Mix" tag="Count" />
-      <ResponsiveContainer height={220}>
-        <PieChart>
-          <Pie data={data} dataKey="value" innerRadius={56} outerRadius={82}>
-            {data.map((item) => <Cell key={item.name} fill={item.color} />)}
-          </Pie>
-          <Tooltip contentStyle={tooltipStyle} />
-        </PieChart>
-      </ResponsiveContainer>
-      <div className="legend">
-        {data.map((item) => <p key={item.name}><i style={{ background: item.color }} />{item.name}<b>{item.value}</b></p>)}
+      <div className="outcomeCompact">
+        <div className="legend compactLegend">
+          {data.map((item) => <p key={item.name}><i style={{ background: item.color }} />{item.name}<b>{item.value}</b></p>)}
+        </div>
+        <ResponsiveContainer height={132}>
+          <PieChart>
+            <Pie data={data} dataKey="value" innerRadius={36} outerRadius={58}>
+              {data.map((item) => <Cell key={item.name} fill={item.color} />)}
+            </Pie>
+            <Tooltip contentStyle={tooltipStyle} />
+          </PieChart>
+        </ResponsiveContainer>
       </div>
       <div className="outcomeStats">
         <Info label="Win rate" value={`${winRate(trades).toFixed(1)}%`} />
@@ -518,11 +522,12 @@ function OutcomePanel({ trades }) {
 function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade }) {
   const [showAll, setShowAll] = useState(false);
   const listTrades = selectedDate ? selectedTrades : (showAll ? trades : trades.slice(0, 8));
+  const sideTrades = selectedDate ? selectedTrades : trades;
   return (
     <section className="page calendarPage">
       <CalendarPanel trades={trades} selectedDate={selectedDate} onDatePick={onDatePick} full />
       <div className="calendarSide">
-        <OutcomePanel trades={selectedDate ? selectedTrades : trades} />
+        <CalendarInsightPanel trades={sideTrades} selectedDate={selectedDate} />
         <TradeList
           title={selectedDate ? `Trades on ${formatDate(selectedDate)}` : showAll ? 'All Trades' : 'Recent Trades'}
           trades={listTrades}
@@ -539,6 +544,44 @@ function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearD
         {selectedDate && <button className="soft clearDay" onClick={clearDate}>Show recent trades</button>}
       </div>
     </section>
+  );
+}
+
+function CalendarInsightPanel({ trades, selectedDate }) {
+  const bySession = Object.entries(trades.reduce((acc, trade) => {
+    acc[trade.session] = (acc[trade.session] || 0) + toNumber(trade.profit);
+    return acc;
+  }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const byStrategy = Object.entries(trades.reduce((acc, trade) => {
+    acc[trade.strategy] = (acc[trade.strategy] || 0) + toNumber(trade.profit);
+    return acc;
+  }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  return (
+    <div className="card calendarInsight">
+      <PanelTitle title={selectedDate ? 'Day Focus' : 'Calendar Focus'} tag={selectedDate ? formatDate(selectedDate) : 'Month'} />
+      <div className="daySummary">
+        <Info label="Trades" value={trades.length} />
+        <Info label="P&L" value={money(sum(trades, 'profit'))} />
+        <Info label="Win rate" value={`${winRate(trades).toFixed(1)}%`} />
+        <Info label="Avg trade" value={money(average(trades.map((t) => t.profit)))} />
+      </div>
+      <div className="focusBars">
+        <MiniRank title="Sessions" rows={bySession.slice(0, 4)} />
+        <MiniRank title="Strategies" rows={byStrategy.slice(0, 4)} />
+      </div>
+    </div>
+  );
+}
+
+function MiniRank({ title, rows }) {
+  return (
+    <div className="miniRank">
+      <b>{title}</b>
+      {rows.map(([name, pnl]) => (
+        <p key={name}><span>{name}</span><strong className={pnl >= 0 ? 'green' : 'red'}>{money(pnl)}</strong></p>
+      ))}
+      {!rows.length && <p><span>No data</span><strong>-</strong></p>}
+    </div>
   );
 }
 
@@ -567,7 +610,7 @@ function CalendarPanel({ trades, selectedDate, onDatePick, full = false }) {
             >
               <span>{new Date(day).getDate()}</span>
               {!!dayTrades.length && <b>{money(pnl)}</b>}
-              {!!dayTrades.length && <small>{dayTrades.length}</small>}
+              {!!dayTrades.length && <small>{dayTrades.length} trades - {winRate(dayTrades).toFixed(0)}%</small>}
             </button>
           );
         })}
@@ -633,7 +676,6 @@ function TradeList({ title = 'Trade History', trades, compact = false, deleteTra
 }
 
 function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
-  const [tab, setTab] = useState('Upload');
   const [market, setMarket] = useState(settings.defaultMarket === 'CFD' ? 'CFD' : 'FTT');
   const [status, setStatus] = useState('');
   const [form, setForm] = useState({
@@ -685,13 +727,9 @@ function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
             <span className="miniCaps">Trade log</span>
             <h2>New Trade</h2>
           </div>
-          <div className="segmented">
-            {['Upload', 'Manual'].map((name) => <button key={name} className={tab === name ? 'on' : ''} onClick={() => setTab(name)}>{name}</button>)}
-          </div>
         </div>
-        {tab === 'Upload' ? (
-          <Importer onImport={onImport} settings={settings} />
-        ) : (
+        <Importer onImport={onImport} settings={settings} />
+        <div className="orDivider"><span>or fill manually</span></div>
           <div className="manualTicket">
             <div className="segmented inline">
               {['FTT', 'CFD'].filter((m) => settings.enabled[m]).map((m) => (
@@ -702,7 +740,6 @@ function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
             <button className="primary save" onClick={save}><Check size={18} />Save trade</button>
             {status && <p className="status">{status}</p>}
           </div>
-        )}
       </div>
     </section>
   );
@@ -841,13 +878,40 @@ function History({ trades, deleteTrade, onOpenTrade, onEditTrade }) {
 }
 
 function Analytics({ trades }) {
+  const byAsset = Object.entries(trades.reduce((acc, trade) => {
+    acc[trade.asset] = (acc[trade.asset] || 0) + toNumber(trade.profit);
+    return acc;
+  }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const byEmotion = Object.entries(trades.reduce((acc, trade) => {
+    acc[trade.emotion] = (acc[trade.emotion] || 0) + toNumber(trade.profit);
+    return acc;
+  }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const bySession = Object.entries(trades.reduce((acc, trade) => {
+    acc[trade.session] = (acc[trade.session] || 0) + toNumber(trade.profit);
+    return acc;
+  }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const biggestWin = [...trades].sort((a, b) => b.profit - a.profit)[0];
+  const biggestLoss = [...trades].sort((a, b) => a.profit - b.profit)[0];
   return (
-    <section className="page">
+    <section className="page analyticsPage">
       <Stats trades={trades} />
-      <div className="dashGrid">
-        <StrategyPanel trades={trades} />
-        <ResultPanel trades={trades} />
+      <div className="analyticsGrid">
         <EquityPanel trades={trades} />
+        <OutcomePanel trades={trades} />
+        <div className="card insightCard">
+          <PanelTitle title="Edge Map" tag="Ranked" />
+          <MiniRank title="Assets" rows={byAsset.slice(0, 6)} />
+          <MiniRank title="Emotions" rows={byEmotion.slice(0, 6)} />
+        </div>
+        <div className="card insightCard">
+          <PanelTitle title="Session Quality" tag="P&L" />
+          <MiniRank title="Sessions" rows={bySession.slice(0, 4)} />
+          <div className="detailGrid">
+            <Info label="Biggest win" value={biggestWin ? `${biggestWin.asset} ${money(biggestWin.profit)}` : '-'} />
+            <Info label="Biggest loss" value={biggestLoss ? `${biggestLoss.asset} ${money(biggestLoss.profit)}` : '-'} />
+          </div>
+        </div>
+        <StrategyPanel trades={trades} />
       </div>
     </section>
   );
@@ -1374,7 +1438,10 @@ function toIso(value) {
 }
 
 function inputDateTime(value = new Date()) {
-  return new Date(value).toISOString().slice(0, 16);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 function dateKey(value) {
