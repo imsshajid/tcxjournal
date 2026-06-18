@@ -1034,6 +1034,60 @@ body {
   letter-spacing: .01em;
 }
 
+.groupCount {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border: 1px solid rgba(94, 234, 212, .2);
+  border-radius: 999px;
+  color: #99f6e4;
+  background: rgba(15, 118, 110, .2);
+  font-size: .67rem;
+  font-style: normal;
+  vertical-align: middle;
+}
+
+.tradeGroup {
+  border-left-color: rgba(45, 212, 191, .46);
+  background: rgba(15, 118, 110, .055);
+}
+
+.groupEntries {
+  margin: 0 0 4px 14px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(94, 234, 212, .22);
+}
+
+.groupChild {
+  min-width: 690px;
+  padding-left: 10px;
+  background: rgba(3, 9, 15, .28);
+}
+
+.groupChild .tradeIdentity b:before {
+  content: "Entry";
+  margin-right: 7px;
+  color: var(--dim);
+  font-size: .66rem;
+  text-transform: uppercase;
+}
+
+.groupToggle svg { transition: transform .18s ease; }
+.groupToggle.open svg { transform: rotate(180deg); }
+
+.miniGroupEntries {
+  display: grid;
+  gap: 5px;
+  margin: -4px 0 4px 14px;
+  padding-left: 9px;
+  border-left: 1px solid rgba(94, 234, 212, .22);
+}
+
+.miniTrade b small {
+  margin-top: 2px;
+  color: #99f6e4;
+}
+
 .chipLine {
   display: flex;
   flex-wrap: wrap;

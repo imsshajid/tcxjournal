@@ -865,33 +865,75 @@ function StrategyPanel({ trades }) {
 }
 
 function TradeList({ title = 'Trade History', trades, compact = false, deleteTrade, empty = 'No trades yet.', onOpenTrade, onEditTrade, actionSlot }) {
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const groups = useMemo(() => groupTradesForJournal(trades), [trades]);
+  const collapsedCount = groups.filter((group) => group.trades.length > 1).length;
+  const toggleGroup = (groupId) => setExpandedGroups((current) => {
+    const next = new Set(current);
+    if (next.has(groupId)) next.delete(groupId);
+    else next.add(groupId);
+    return next;
+  });
+
+  const renderTradeRow = (trade, options = {}) => {
+    const { group, child = false } = options;
+    const multiple = group?.trades.length > 1;
+    const expanded = multiple && expandedGroups.has(group.id);
+    const open = () => multiple ? toggleGroup(group.id) : onOpenTrade?.(trade);
+    return (
+      <div
+        className={`trow tradeButton ${multiple ? 'tradeGroup' : ''} ${child ? 'groupChild' : ''}`}
+        key={child ? trade.id : group?.id || trade.id}
+        role="button"
+        tabIndex={0}
+        onClick={open}
+        onKeyDown={(event) => (event.key === 'Enter' || event.key === ' ') && open()}
+      >
+        <div className="tradeIdentity">
+          <b>{trade.asset}{multiple && <i className="groupCount">{group.trades.length} entries</i>}</b>
+          <small>{shortDate(trade.openedAt)} - {timeOnly(trade.openedAt)} - {trade.market} {trade.direction}</small>
+        </div>
+        <span className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i></span>
+        <span>{trade.session}<small>{multiple ? `Closes ${timeOnly(trade.closedAt)}` : trade.duration || 'Timed trade'}</small></span>
+        <span className={trade.profit >= 0 ? 'green' : 'red'}>
+          {money(trade.profit)}
+          {multiple
+            ? <small>{trade.market === 'FTT' ? `${money(trade.amount)} total stake` : `${formatAmount(trade.amount)} total lot`}</small>
+            : trade.market === 'FTT' && <small>{trade.payout || 90}% payout</small>}
+        </span>
+        {!compact && (
+          <span className="rowActions" onClick={(event) => event.stopPropagation()}>
+            {multiple ? (
+              <button className={`iconBtn groupToggle ${expanded ? 'open' : ''}`} title={expanded ? 'Collapse entries' : 'Show entries'} onClick={() => toggleGroup(group.id)}><ChevronDown size={16} /></button>
+            ) : (
+              <>
+                <button className="iconBtn" title="View trade" onClick={() => onOpenTrade?.(trade)}><Eye size={15} /></button>
+                <button className="iconBtn" title="Edit trade" onClick={() => onEditTrade?.(trade)}><Edit3 size={15} /></button>
+                {deleteTrade && <button className="iconBtn danger" title="Delete trade" onClick={() => deleteTrade(trade.id)}><Trash2 size={15} /></button>}
+              </>
+            )}
+          </span>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className={`card tableCard ${compact ? '' : 'wideCard'}`}>
-      <PanelTitle title={title} tag={`${trades.length} trades`} action={actionSlot} />
+      <PanelTitle title={title} tag={`${trades.length} trades${collapsedCount ? ` - ${groups.length} rows` : ''}`} action={actionSlot} />
       <div className="table">
         <div className="trow head">
           <span>Trade</span><span>Setup</span><span>Session</span><span>Result</span>{!compact && <span />}
         </div>
-        {trades.map((trade) => (
-          <div className="trow tradeButton" key={trade.id} role="button" tabIndex={0} onClick={() => onOpenTrade?.(trade)} onKeyDown={(e) => e.key === 'Enter' && onOpenTrade?.(trade)}>
-            <div className="tradeIdentity">
-              <b>{trade.asset}</b>
-              <small>{shortDate(trade.openedAt)} - {timeOnly(trade.openedAt)} - {trade.market} {trade.direction}</small>
-            </div>
-            <span className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i></span>
-            <span>{trade.session}<small>{trade.duration || 'Timed trade'}</small></span>
-            <span className={trade.profit >= 0 ? 'green' : 'red'}>
-              {money(trade.profit)}
-              {trade.market === 'FTT' && <small>{trade.payout || 90}% payout</small>}
-            </span>
-            {!compact && (
-              <span className="rowActions" onClick={(e) => e.stopPropagation()}>
-                <button className="iconBtn" onClick={() => onOpenTrade?.(trade)}><Eye size={15} /></button>
-                <button className="iconBtn" onClick={() => onEditTrade?.(trade)}><Edit3 size={15} /></button>
-                <button className="iconBtn danger" onClick={() => deleteTrade?.(trade.id)}><Trash2 size={15} /></button>
-              </span>
+        {groups.map((group) => (
+          <React.Fragment key={group.id}>
+            {renderTradeRow(group.summary, { group })}
+            {group.trades.length > 1 && expandedGroups.has(group.id) && (
+              <div className="groupEntries">
+                {group.trades.map((trade) => renderTradeRow(trade, { child: true }))}
+              </div>
             )}
-          </div>
+          </React.Fragment>
         ))}
         {!trades.length && <div className="empty">{empty}</div>}
       </div>
@@ -1379,6 +1421,8 @@ function TradeDetailModal({ trade, onClose, onEdit, onDelete }) {
 }
 
 function DayTradesModal({ date, trades, onClose, onOpenTrade }) {
+  const [expandedGroup, setExpandedGroup] = useState('');
+  const groups = useMemo(() => groupTradesForJournal(trades), [trades]);
   return (
     <Modal onClose={onClose} className="dayModal">
       <div className="modalHead">
@@ -1394,12 +1438,23 @@ function DayTradesModal({ date, trades, onClose, onOpenTrade }) {
         <Info label="Win rate" value={`${winRate(trades).toFixed(1)}%`} />
       </div>
       <div className="modalTradeStack">
-        {trades.map((trade) => (
-          <button key={trade.id} className="miniTrade" onClick={() => onOpenTrade(trade)}>
-            <b>{trade.asset}</b>
-            <span>{trade.strategy} - {trade.emotion}</span>
-            <strong className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</strong>
-          </button>
+        {groups.map((group) => (
+          <React.Fragment key={group.id}>
+            <button className="miniTrade" onClick={() => group.trades.length > 1 ? setExpandedGroup((current) => current === group.id ? '' : group.id) : onOpenTrade(group.summary)}>
+              <b>{group.summary.asset}{group.trades.length > 1 && <small>{group.trades.length} entries</small>}</b>
+              <span>{group.summary.strategy} - {group.summary.emotion}</span>
+              <strong className={group.summary.profit >= 0 ? 'green' : 'red'}>{money(group.summary.profit)}</strong>
+            </button>
+            {group.trades.length > 1 && expandedGroup === group.id && (
+              <div className="miniGroupEntries">
+                {group.trades.map((trade) => (
+                  <button key={trade.id} className="miniTrade" onClick={() => onOpenTrade(trade)}>
+                    <b>{timeOnly(trade.openedAt)}</b><span>{money(trade.amount)} stake</span><strong className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</strong>
+                  </button>
+                ))}
+              </div>
+            )}
+          </React.Fragment>
         ))}
         {!trades.length && <p className="empty">No trades on this day.</p>}
       </div>
@@ -1767,6 +1822,63 @@ function uniqueKey(trade) {
   return [trade.market, trade.asset, trade.direction, dateKey(trade.openedAt), timeOnly(trade.openedAt), trade.amount, trade.duration, trade.profit].join('|').toLowerCase();
 }
 
+function groupTradesForJournal(trades) {
+  const groups = new Map();
+  trades.forEach((trade) => {
+    const closeTime = secondKey(trade.closedAt);
+    const key = closeTime
+      ? [trade.account, trade.market, trade.asset, trade.direction, closeTime].map((value) => clean(value).toLowerCase()).join('|')
+      : `single|${trade.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(trade);
+  });
+  return [...groups.entries()].map(([id, entries]) => ({
+    id,
+    trades: entries,
+    summary: entries.length === 1 ? entries[0] : summarizeTradeGroup(id, entries),
+  }));
+}
+
+function summarizeTradeGroup(id, trades) {
+  const first = trades[0];
+  const totalAmount = sum(trades, 'amount');
+  const profit = sum(trades, 'profit');
+  return {
+    ...first,
+    id: `group:${id}`,
+    sourceId: '',
+    amount: round(totalAmount),
+    income: first.market === 'FTT' ? round(sum(trades, 'income')) : '',
+    profit: round(profit),
+    result: tradeResult(profit),
+    open: weightedTradeValue(trades, 'open'),
+    close: weightedTradeValue(trades, 'close'),
+    payout: first.market === 'FTT' ? Math.round(weightedTradeValue(trades, 'payout')) : '',
+    openedAt: [...trades].sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt))[0].openedAt,
+    closedAt: [...trades].sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt))[0].closedAt,
+    duration: `${trades.length} entries`,
+    strategy: commonTradeValue(trades, 'strategy', 'Mixed strategy'),
+    emotion: commonTradeValue(trades, 'emotion', 'Mixed emotion'),
+    session: commonTradeValue(trades, 'session', 'Mixed session'),
+  };
+}
+
+function weightedTradeValue(trades, key) {
+  const weighted = trades.reduce((total, trade) => total + toNumber(trade[key]) * Math.abs(toNumber(trade.amount)), 0);
+  const weight = trades.reduce((total, trade) => total + Math.abs(toNumber(trade.amount)), 0);
+  return round(weight ? weighted / weight : average(trades.map((trade) => trade[key])));
+}
+
+function commonTradeValue(trades, key, fallback) {
+  const values = [...new Set(trades.map((trade) => trade[key]).filter(Boolean))];
+  return values.length === 1 ? values[0] : fallback;
+}
+
+function secondKey(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 19);
+}
+
 function getter(row) {
   const entries = Object.entries(row).reduce((acc, [key, value]) => {
     acc[normalizeHeader(key)] = value;
@@ -1976,6 +2088,10 @@ function money(value) {
 
 function sum(rows, key) {
   return rows.reduce((total, row) => total + toNumber(row[key]), 0);
+}
+
+function formatAmount(value) {
+  return toNumber(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
 function average(values) {
