@@ -1336,6 +1336,21 @@ body {
 }
 
 .accountAction { color: var(--text); background: rgba(255,255,255,.06); }
+.emptyJournalAction {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  color: #fda4af;
+  background: transparent;
+  font-size: .8rem;
+  font-weight: 800;
+}
+.emptyJournalAction:hover { background: rgba(190, 24, 93, .1); }
 .googleGlyph { color: #2563eb; font-size: 1.05rem; font-weight: 900; }
 .privacyCopy { margin-top: 10px; text-align: center; }
 

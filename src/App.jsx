@@ -257,15 +257,17 @@ function App() {
     status: cloudConfigured ? 'connecting' : 'setup',
     security: null,
     error: '',
+    hydrated: false,
   });
   const dataRef = useRef(data);
   const userRef = useRef(null);
 
   useEffect(() => {
     dataRef.current = data;
+    if (authState.user && !authState.hydrated) return;
     const key = authState.user ? `${USER_LS_PREFIX}${authState.user.uid}` : LS;
     localStorage.setItem(key, JSON.stringify(data));
-  }, [data, authState.user]);
+  }, [data, authState.user, authState.hydrated]);
 
   useEffect(() => {
     let unsubscribe = () => {};
@@ -282,17 +284,20 @@ function App() {
           status: cloudConfigured ? 'local' : 'setup',
           security: null,
           error: '',
+          hydrated: false,
         }));
         return;
       }
 
-      setAuthState((current) => ({ ...current, loading: true, user, status: 'syncing', security: 'checking', error: '' }));
+      setAuthState((current) => ({ ...current, loading: true, user, status: 'syncing', security: 'checking', error: '', hydrated: false }));
       try {
         const cloud = await getCloud();
         const remote = await cloud.loadCloudJournal(user.uid);
         const userCache = savedForUser(user.uid);
         const hasRemote = Boolean(remote.trades.length || remote.settings);
-        const base = hasRemote ? normalizeJournal(remote) : (userCache || dataRef.current);
+        const base = hasRemote
+          ? normalizeJournal(remote)
+          : (userCache || normalizeJournal({ trades: [], settings: DEFAULT_SETTINGS }));
         const merged = {
           trades: hasRemote ? mergeTrades(base.trades, userCache?.trades) : mergeTrades(base.trades),
           settings: remote.settings ? normalizeJournal({ settings: remote.settings }).settings : base.settings,
@@ -306,7 +311,7 @@ function App() {
         } catch {
           security = 'unavailable';
         }
-        if (!disposed) setAuthState((current) => ({ ...current, loading: false, user, status: 'synced', security, error: '' }));
+        if (!disposed) setAuthState((current) => ({ ...current, loading: false, user, status: 'synced', security, error: '', hydrated: true }));
       } catch (error) {
         if (!disposed) setAuthState((current) => ({
           ...current,
@@ -358,6 +363,23 @@ function App() {
     setAccountOpen(false);
     const cloud = await getCloud();
     await cloud.logout();
+  };
+
+  const startFresh = async () => {
+    const user = userRef.current;
+    if (!user || !window.confirm('Remove every trade from this cloud account and start with an empty journal? Your old anonymous browser journal will stay separate.')) return;
+    setAuthState((current) => ({ ...current, loading: true, status: 'syncing', error: '' }));
+    try {
+      const cloud = await getCloud();
+      await cloud.clearCloudJournal(user.uid);
+      const emptyJournal = normalizeJournal({ trades: [], settings: DEFAULT_SETTINGS });
+      setData(emptyJournal);
+      await cloud.initializeCloudJournal(user, emptyJournal);
+      setAuthState((current) => ({ ...current, loading: false, status: 'synced', error: '', hydrated: true }));
+      setAccountOpen(false);
+    } catch (error) {
+      setAuthState((current) => ({ ...current, loading: false, status: 'error', error: friendlyAuthError(error) }));
+    }
   };
 
   const enabledTrades = useMemo(
@@ -471,6 +493,7 @@ function App() {
           onClose={() => setAccountOpen(false)}
           onSignIn={signIn}
           onSignOut={signOut}
+          onStartFresh={startFresh}
         />
       )}
       {activeTrade && (
@@ -1160,7 +1183,7 @@ function SettingsPage({ settings, updateSettings, authState, openAccount }) {
   );
 }
 
-function AccountModal({ authState, onClose, onSignIn, onSignOut }) {
+function AccountModal({ authState, onClose, onSignIn, onSignOut, onStartFresh }) {
   const configured = authState.configured;
   return (
     <div className="modalBackdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -1187,6 +1210,7 @@ function AccountModal({ authState, onClose, onSignIn, onSignOut }) {
             </div>
             {authState.error && <p className="accountError">{authState.error}</p>}
             <button className="soft accountAction" onClick={onSignOut}><LogOut size={17} />Sign out</button>
+            <button className="emptyJournalAction" disabled={authState.loading} onClick={onStartFresh}><Trash2 size={16} />Start with an empty journal</button>
           </>
         ) : (
           <>

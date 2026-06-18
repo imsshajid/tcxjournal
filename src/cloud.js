@@ -96,6 +96,18 @@ export async function deleteCloudTrade(uid, tradeId) {
   await deleteDoc(doc(db, 'users', uid, 'trades', tradeId));
 }
 
+export async function clearCloudJournal(uid) {
+  ensureCloud();
+  const tradeSnapshot = await getDocs(collection(db, 'users', uid, 'trades'));
+  const tradeDocs = tradeSnapshot.docs;
+  for (let start = 0; start < tradeDocs.length; start += 450) {
+    const batch = writeBatch(db);
+    tradeDocs.slice(start, start + 450).forEach((tradeDoc) => batch.delete(tradeDoc.ref));
+    await batch.commit();
+  }
+  await deleteDoc(doc(db, 'users', uid, 'journal', 'settings'));
+}
+
 export async function saveCloudSettings(uid, settings) {
   ensureCloud();
   await setDoc(doc(db, 'users', uid, 'journal', 'settings'), {
