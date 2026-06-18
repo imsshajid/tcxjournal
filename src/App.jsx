@@ -14,10 +14,13 @@ import {
   Home,
   ImageUp,
   Layers3,
+  LogIn,
+  LogOut,
   Menu,
   Plus,
   Search,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   StickyNote,
@@ -45,6 +48,15 @@ import readXlsxFile from 'read-excel-file/browser';
 import './style.css';
 
 const LS = 'tcxjournal.free.v3';
+const USER_LS_PREFIX = 'tcxjournal.user.v1.';
+const cloudConfigured = [
+  import.meta.env.VITE_FIREBASE_API_KEY,
+  import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  import.meta.env.VITE_FIREBASE_APP_ID,
+].every(Boolean);
+let cloudModulePromise;
+const getCloud = () => (cloudModulePromise ||= import('./cloud'));
 const DEFAULT_SETTINGS = {
   enabled: { FTT: true, CFD: true },
   defaultMarket: 'ALL',
@@ -194,6 +206,40 @@ function saved() {
   }
 }
 
+function savedForUser(uid) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(`${USER_LS_PREFIX}${uid}`));
+    if (!parsed) return null;
+    return normalizeJournal(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeJournal(journal) {
+  return {
+    trades: (journal?.trades || []).map((trade) => makeTrade(trade)),
+    settings: {
+      ...DEFAULT_SETTINGS,
+      ...(journal?.settings || {}),
+      enabled: { ...DEFAULT_SETTINGS.enabled, ...(journal?.settings?.enabled || {}) },
+    },
+  };
+}
+
+function mergeTrades(primary, secondary = []) {
+  const merged = [];
+  const keys = new Set();
+  [...primary, ...secondary].map((trade) => makeTrade(trade)).forEach((trade) => {
+    const key = uniqueKey(trade);
+    if (!keys.has(key)) {
+      keys.add(key);
+      merged.push(trade);
+    }
+  });
+  return merged.sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
+}
+
 function App() {
   const [data, setData] = useState(saved);
   const [page, setPage] = useState('Home');
@@ -203,8 +249,116 @@ function App() {
   const [activeTrade, setActiveTrade] = useState(null);
   const [editingTrade, setEditingTrade] = useState(null);
   const [dayPopup, setDayPopup] = useState('');
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [authState, setAuthState] = useState({
+    configured: cloudConfigured,
+    loading: cloudConfigured,
+    user: null,
+    status: cloudConfigured ? 'connecting' : 'setup',
+    security: null,
+    error: '',
+  });
+  const dataRef = useRef(data);
+  const userRef = useRef(null);
 
-  useEffect(() => localStorage.setItem(LS, JSON.stringify(data)), [data]);
+  useEffect(() => {
+    dataRef.current = data;
+    const key = authState.user ? `${USER_LS_PREFIX}${authState.user.uid}` : LS;
+    localStorage.setItem(key, JSON.stringify(data));
+  }, [data, authState.user]);
+
+  useEffect(() => {
+    let unsubscribe = () => {};
+    let disposed = false;
+    const handleAuth = async (user) => {
+      const previousUser = userRef.current;
+      userRef.current = user;
+      if (!user) {
+        if (previousUser) setData(saved());
+        setAuthState((current) => ({
+          ...current,
+          loading: false,
+          user: null,
+          status: cloudConfigured ? 'local' : 'setup',
+          security: null,
+          error: '',
+        }));
+        return;
+      }
+
+      setAuthState((current) => ({ ...current, loading: true, user, status: 'syncing', security: 'checking', error: '' }));
+      try {
+        const cloud = await getCloud();
+        const remote = await cloud.loadCloudJournal(user.uid);
+        const userCache = savedForUser(user.uid);
+        const hasRemote = Boolean(remote.trades.length || remote.settings);
+        const base = hasRemote ? normalizeJournal(remote) : (userCache || dataRef.current);
+        const merged = {
+          trades: hasRemote ? mergeTrades(base.trades, userCache?.trades) : mergeTrades(base.trades),
+          settings: remote.settings ? normalizeJournal({ settings: remote.settings }).settings : base.settings,
+        };
+        setData(merged);
+        await cloud.initializeCloudJournal(user, merged);
+
+        let security = 'verified';
+        try {
+          await cloud.verifyWithTcxSecurity(user);
+        } catch {
+          security = 'unavailable';
+        }
+        if (!disposed) setAuthState((current) => ({ ...current, loading: false, user, status: 'synced', security, error: '' }));
+      } catch (error) {
+        if (!disposed) setAuthState((current) => ({
+          ...current,
+          loading: false,
+          user,
+          status: 'error',
+          security: 'unavailable',
+          error: friendlyAuthError(error),
+        }));
+      }
+    };
+
+    if (!cloudConfigured) {
+      handleAuth(null);
+      return undefined;
+    }
+    getCloud().then((cloud) => {
+      if (!disposed) unsubscribe = cloud.watchAuth(handleAuth);
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, []);
+
+  const syncCloud = async (operation) => {
+    const user = userRef.current;
+    if (!user) return;
+    setAuthState((current) => ({ ...current, status: 'syncing', error: '' }));
+    try {
+      await operation(user.uid, await getCloud());
+      setAuthState((current) => ({ ...current, status: 'synced', error: '' }));
+    } catch (error) {
+      setAuthState((current) => ({ ...current, status: 'error', error: friendlyAuthError(error) }));
+    }
+  };
+
+  const signIn = async () => {
+    setAuthState((current) => ({ ...current, loading: true, status: 'connecting', error: '' }));
+    try {
+      const cloud = await getCloud();
+      await cloud.loginWithGoogle();
+    } catch (error) {
+      setAuthState((current) => ({ ...current, loading: false, status: 'local', error: friendlyAuthError(error) }));
+    }
+  };
+
+  const signOut = async () => {
+    setAccountOpen(false);
+    const cloud = await getCloud();
+    await cloud.logout();
+  };
 
   const enabledTrades = useMemo(
     () => data.trades.filter((t) => data.settings.enabled[t.market]),
@@ -232,18 +386,23 @@ function App() {
     }
     if (fresh.length) {
       setData((current) => ({ ...current, trades: [...fresh, ...current.trades] }));
+      syncCloud((uid, cloud) => cloud.saveCloudTrades(uid, fresh));
     }
     return { added: fresh.length, skipped: normalized.length - fresh.length, detected: normalized.length };
   };
 
   const saveTrade = (trade) => importTrades([trade]);
-  const deleteTrade = (id) => setData((current) => ({ ...current, trades: current.trades.filter((t) => t.id !== id) }));
+  const deleteTrade = (id) => {
+    setData((current) => ({ ...current, trades: current.trades.filter((t) => t.id !== id) }));
+    syncCloud((uid, cloud) => cloud.deleteCloudTrade(uid, id));
+  };
   const updateTrade = (trade) => {
     const normalized = makeTrade(trade);
     setData((current) => ({
       ...current,
       trades: current.trades.map((item) => item.id === normalized.id ? normalized : item),
     }));
+    syncCloud((uid, cloud) => cloud.saveCloudTrades(uid, [normalized]));
     setEditingTrade(null);
     setActiveTrade(normalized);
   };
@@ -253,7 +412,9 @@ function App() {
     setEditingTrade(null);
   };
   const updateSettings = (settings) => {
-    setData((current) => ({ ...current, settings: { ...current.settings, ...settings } }));
+    const nextSettings = { ...dataRef.current.settings, ...settings };
+    setData((current) => ({ ...current, settings: nextSettings }));
+    syncCloud((uid, cloud) => cloud.saveCloudSettings(uid, nextSettings));
     if (settings.defaultMarket) setMarket(settings.defaultMarket);
   };
   const pickDate = (key) => setSelectedDate((current) => (current === key ? '' : key));
@@ -273,6 +434,8 @@ function App() {
           settings={data.settings}
           setPage={setPage}
           openNav={() => setNavOpen(true)}
+          authState={authState}
+          openAccount={() => setAccountOpen(true)}
         />
         {page === 'Home' && (
           <Dashboard
@@ -299,9 +462,17 @@ function App() {
             onEditTrade={setEditingTrade}
           />
         )}
-        {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} />}
+        {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} authState={authState} openAccount={() => setAccountOpen(true)} />}
       </main>
       <BottomNav page={page} setPage={setPage} />
+      {accountOpen && (
+        <AccountModal
+          authState={authState}
+          onClose={() => setAccountOpen(false)}
+          onSignIn={signIn}
+          onSignOut={signOut}
+        />
+      )}
       {activeTrade && (
         <TradeDetailModal
           trade={activeTrade}
@@ -368,14 +539,14 @@ function Sidebar({ page, setPage, open, setOpen }) {
         ))}
       </nav>
       <div className="sideNote">
-        <Sparkles size={18} />
-        <span>Free OCR fallback active</span>
+        <ShieldCheck size={18} />
+        <span>Protected by TCX Security</span>
       </div>
     </aside>
   );
 }
 
-function Topbar({ page, market, setMarket, settings, setPage, openNav }) {
+function Topbar({ page, market, setMarket, settings, setPage, openNav, authState, openAccount }) {
   const options = ['ALL', 'FTT', 'CFD'].filter((m) => m === 'ALL' || settings.enabled[m]);
   return (
     <header className="topbar">
@@ -392,6 +563,13 @@ function Topbar({ page, market, setMarket, settings, setPage, openNav }) {
         </div>
         <button className="soft search"><Search size={17} /><span>Search</span></button>
         <button className="primary" onClick={() => setPage('New Trade')}><Plus size={17} /><span>New</span></button>
+        <button className={authState.user ? 'accountButton signedIn' : 'accountButton'} onClick={openAccount} aria-label="Account and cloud sync">
+          {authState.user?.photoURL
+            ? <img src={authState.user.photoURL} alt="" referrerPolicy="no-referrer" />
+            : <LogIn size={17} />}
+          <span>{authState.user ? authState.user.displayName?.split(' ')[0] || 'Account' : 'Sign in'}</span>
+          {authState.security === 'verified' && <ShieldCheck className="verifiedMark" size={15} />}
+        </button>
       </div>
     </header>
   );
@@ -948,12 +1126,24 @@ function Analytics({ trades }) {
   );
 }
 
-function SettingsPage({ settings, updateSettings }) {
+function SettingsPage({ settings, updateSettings, authState, openAccount }) {
   const toggle = (market) => updateSettings({ enabled: { ...settings.enabled, [market]: !settings.enabled[market] } });
   return (
     <section className="page narrow">
       <div className="card settings">
-        <PanelTitle title="Settings" tag="Local" />
+        <PanelTitle title="Settings" tag={authState.user ? 'Cloud' : 'Local'} />
+        <button className="accountSettings" onClick={openAccount}>
+          <div className="accountIdentity">
+            {authState.user?.photoURL
+              ? <img src={authState.user.photoURL} alt="" referrerPolicy="no-referrer" />
+              : <span className="accountGlyph"><LogIn size={18} /></span>}
+            <div>
+              <b>{authState.user ? authState.user.displayName || authState.user.email : 'Cloud account'}</b>
+              <small>{accountStatusText(authState)}</small>
+            </div>
+          </div>
+          <span className={`syncPill ${authState.status}`}>{authState.user ? authState.status : 'Sign in'}</span>
+        </button>
         <div className="settingsRows">
           <label><span>Default view</span><select value={settings.defaultMarket} onChange={(e) => updateSettings({ defaultMarket: e.target.value })}><option>ALL</option><option>FTT</option><option>CFD</option></select></label>
           <label><span>OCR preference</span><select value={settings.ocrMode} onChange={(e) => updateSettings({ ocrMode: e.target.value })}><option>AUTO</option><option>FTT</option><option>CFD</option></select></label>
@@ -962,10 +1152,59 @@ function SettingsPage({ settings, updateSettings }) {
         </div>
         <div className="storageNote">
           <b>Storage</b>
-          <span>Browser local storage is active. No paid database is required.</span>
+          <span>{authState.user ? 'Encrypted transport, private Firestore rules, and a local offline copy are active.' : 'Browser storage is active. Sign in to add free private cloud sync.'}</span>
         </div>
+        <div className="securityNote"><ShieldCheck size={18} /><div><b>TCX Security</b><span>{authState.security === 'verified' ? 'Google identity verified server-side.' : 'Identity verification activates with cloud sign-in.'}</span></div></div>
       </div>
     </section>
+  );
+}
+
+function AccountModal({ authState, onClose, onSignIn, onSignOut }) {
+  const configured = authState.configured;
+  return (
+    <div className="modalBackdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="modalPanel accountModal">
+        <button className="modalClose" onClick={onClose}><X size={19} /></button>
+        <div className="securitySeal"><ShieldCheck size={25} /></div>
+        <span className="miniCaps">TCX Security</span>
+        <h2>{authState.user ? 'Your journal is protected' : 'Take your journal with you'}</h2>
+        <p className="accountLead">{authState.user
+          ? 'Your trades are stored under your private account and remain cached on this device for fast access.'
+          : 'Sign in with Google to privately sync trades, settings, strategies, and reviews across your devices.'}</p>
+
+        {authState.user ? (
+          <>
+            <div className="signedProfile">
+              {authState.user.photoURL && <img src={authState.user.photoURL} alt="" referrerPolicy="no-referrer" />}
+              <div><b>{authState.user.displayName}</b><span>{authState.user.email}</span></div>
+              <span className={`syncPill ${authState.status}`}>{authState.status}</span>
+            </div>
+            <div className="securityChecks">
+              <div><Check size={16} /><span>Private user-scoped storage</span></div>
+              <div><Check size={16} /><span>Automatic local-to-cloud migration</span></div>
+              <div className={authState.security === 'verified' ? '' : 'pending'}><ShieldCheck size={16} /><span>{authState.security === 'verified' ? 'TCX identity verified' : 'TCX verification pending'}</span></div>
+            </div>
+            {authState.error && <p className="accountError">{authState.error}</p>}
+            <button className="soft accountAction" onClick={onSignOut}><LogOut size={17} />Sign out</button>
+          </>
+        ) : (
+          <>
+            <div className="securityChecks">
+              <div><Check size={16} /><span>Free Google sign-in</span></div>
+              <div><Check size={16} /><span>Free Firestore cloud sync</span></div>
+              <div><ShieldCheck size={16} /><span>TCX Security token verification</span></div>
+            </div>
+            {!configured && <p className="setupNotice">Cloud access is installed and awaiting the Firebase project keys in Netlify.</p>}
+            {authState.error && <p className="accountError">{authState.error}</p>}
+            <button className="googleButton" disabled={!configured || authState.loading} onClick={onSignIn}>
+              <span className="googleGlyph">G</span>{!configured ? 'Firebase setup required' : authState.loading ? 'Connecting...' : 'Continue with Google'}
+            </button>
+            <small className="privacyCopy">TCX Journal never receives your Google password.</small>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1721,6 +1960,25 @@ function average(values) {
 
 function winRate(trades) {
   return trades.length ? trades.filter((trade) => trade.result === 'WIN').length / trades.length * 100 : 0;
+}
+
+function accountStatusText(authState) {
+  if (!authState.configured) return 'Cloud connection needs Firebase project keys';
+  if (!authState.user) return 'Use Google to sync your journal privately';
+  if (authState.status === 'syncing') return 'Saving your latest changes';
+  if (authState.status === 'error') return authState.error || 'Cloud sync needs attention';
+  if (authState.security === 'verified') return 'Synced and verified by TCX Security';
+  return 'Private cloud journal connected';
+}
+
+function friendlyAuthError(error) {
+  const code = String(error?.code || '');
+  if (code.includes('popup-closed')) return 'Sign-in was closed before it finished.';
+  if (code.includes('popup-blocked')) return 'Your browser blocked the sign-in window. Allow popups and try again.';
+  if (code.includes('unauthorized-domain')) return 'This domain must be added to Firebase authorized domains.';
+  if (code.includes('permission-denied')) return 'Firestore access was denied. Publish the included security rules.';
+  if (code.includes('network')) return 'The cloud is unreachable right now. Your journal is still safe on this device.';
+  return error?.message || 'Cloud sign-in could not be completed.';
 }
 
 function csvCell(value) {

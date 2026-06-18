@@ -1073,6 +1073,7 @@ body {
 }
 
 .modalPanel {
+  position: relative;
   width: min(920px, 100%);
   max-height: min(92vh, 980px);
   overflow: auto;
@@ -1139,6 +1140,215 @@ body {
   display: grid;
   gap: 8px;
 }
+
+.accountButton {
+  min-height: 40px;
+  max-width: 180px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  background: rgba(6, 12, 20, .52);
+  font-weight: 800;
+}
+
+.accountButton.signedIn {
+  color: var(--text);
+  border-color: rgba(45, 212, 191, .25);
+}
+
+.accountButton img,
+.accountIdentity img,
+.signedProfile img {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.accountButton > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verifiedMark { color: #5eead4; flex: 0 0 auto; }
+
+.accountSettings {
+  width: 100%;
+  min-height: 72px;
+  margin-bottom: 12px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(45, 212, 191, .2);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: rgba(6, 18, 24, .56);
+  text-align: left;
+}
+
+.accountIdentity,
+.signedProfile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.accountIdentity div,
+.signedProfile div { min-width: 0; }
+.accountIdentity small,
+.signedProfile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.accountGlyph,
+.securitySeal {
+  display: grid;
+  place-items: center;
+  color: #99f6e4;
+  background: rgba(15, 118, 110, .26);
+  border: 1px solid rgba(94, 234, 212, .22);
+}
+
+.accountGlyph {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+
+.syncPill {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: #b9c7d8;
+  background: rgba(148, 163, 184, .12);
+  font-size: .7rem;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.syncPill.synced { color: #99f6e4; background: rgba(15, 118, 110, .28); }
+.syncPill.syncing,
+.syncPill.connecting { color: #bae6fd; background: rgba(14, 116, 144, .25); }
+.syncPill.error { color: #fecdd3; background: rgba(190, 24, 93, .2); }
+
+.securityNote {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  color: #99f6e4;
+}
+
+.securityNote span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+.accountModal {
+  width: min(480px, 100%);
+  padding: 24px;
+  overflow: hidden;
+}
+
+.accountModal h2 {
+  margin: 7px 0 8px;
+  font-size: 1.55rem;
+}
+
+.modalClose {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  background: rgba(255,255,255,.05);
+}
+
+.securitySeal {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+  border-radius: 50%;
+  box-shadow: 0 16px 42px rgba(15, 118, 110, .22);
+}
+
+.accountLead {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.signedProfile {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(6, 12, 20, .45);
+}
+
+.signedProfile img { width: 38px; height: 38px; }
+.signedProfile .syncPill { margin-left: auto; }
+.signedProfile span { display: block; margin-top: 3px; color: var(--muted); font-size: .78rem; }
+
+.securityChecks {
+  display: grid;
+  gap: 9px;
+  margin: 18px 0;
+}
+
+.securityChecks div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #c9d4e3;
+}
+
+.securityChecks svg { color: #5eead4; }
+.securityChecks .pending svg { color: var(--gold); }
+
+.googleButton,
+.accountAction {
+  width: 100%;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: var(--radius);
+  color: #101828;
+  background: #f8fafc;
+  font-weight: 800;
+}
+
+.accountAction { color: var(--text); background: rgba(255,255,255,.06); }
+.googleGlyph { color: #2563eb; font-size: 1.05rem; font-weight: 900; }
+.privacyCopy { margin-top: 10px; text-align: center; }
+
+.setupNotice,
+.accountError {
+  padding: 10px;
+  border-radius: var(--radius);
+  font-size: .8rem;
+  line-height: 1.45;
+}
+
+.setupNotice { color: #bae6fd; background: rgba(14, 116, 144, .16); }
+.accountError { color: #fecdd3; background: rgba(190, 24, 93, .14); }
 
 .miniTrade,
 .queueItem {
