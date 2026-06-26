@@ -1171,7 +1171,12 @@ function Importer({ onImport, settings, onReviewChange }) {
           setStatus(`${fileLabel} - reading screenshot...`);
           const text = await readImageText(file, mode, (message) => setStatus(`${fileLabel} - ${message}`));
           setStatus(`${fileLabel} - detecting trades...`);
-          const parsed = parseTradeText(text, mode);
+          let parsed = parseTradeText(text, mode);
+          if (!parsed.length) {
+            setStatus(`${fileLabel} - retrying enhanced screenshot OCR...`);
+            const enhancedText = await readBrowserImageText(file, (message) => setStatus(`${fileLabel} - ${message}`));
+            parsed = parseTradeText(`${text}\n${enhancedText}`, mode);
+          }
           if (!parsed.length) throw new Error('not-trade-image');
           allDrafts.push(...parsed);
         } else {
@@ -1957,8 +1962,13 @@ async function readImageText(file, mode, setStatus) {
       setStatus('Cloud OCR unavailable. Running browser OCR...');
     }
   }
+  return readBrowserImageText(file, setStatus);
+}
+
+async function readBrowserImageText(file, setStatus) {
   setStatus('Running browser OCR...');
-  const result = await recognize(file, 'eng', {
+  const ocrFile = await prepareImageForOcr(file);
+  const result = await recognize(ocrFile, 'eng', {
     logger: (m) => {
       if (m.status && m.progress) setStatus(`${m.status} ${Math.round(m.progress * 100)}%`);
     },
@@ -1967,6 +1977,41 @@ async function readImageText(file, mode, setStatus) {
     langPath: 'https://tessdata.projectnaptha.com/4.0.0',
   });
   return result.data.text;
+}
+
+async function prepareImageForOcr(file) {
+  if (!file.type?.startsWith('image/') || typeof createImageBitmap !== 'function') return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const shortImage = bitmap.height < 180;
+    if (!shortImage) return file;
+    const scale = Math.min(8, Math.max(3, Math.ceil(320 / bitmap.height)));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return file;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let total = 0;
+    for (let i = 0; i < image.data.length; i += 4) total += (image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3;
+    const dark = total / (image.data.length / 4) < 120;
+    for (let i = 0; i < image.data.length; i += 4) {
+      let gray = (image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3;
+      if (dark) gray = 255 - gray;
+      gray = gray < 145 ? 0 : 255;
+      image.data[i] = gray;
+      image.data[i + 1] = gray;
+      image.data[i + 2] = gray;
+    }
+    ctx.putImageData(image, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    return blob || file;
+  } catch {
+    return file;
+  }
 }
 
 async function callCloudOcr(file) {
@@ -2023,13 +2068,13 @@ function buildFttBlocks(lines, uuid) {
       return lines.slice(starts[index], end).join(' ');
     });
   }
-  const assetLine = /[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?/;
+  const assetLine = /[A-Z0-9]{3}\s*\/\s*[A-Z0-9]{2,3}(?:\s*\(OTC\))?/i;
   const starts = lines.reduce((acc, line, index) => (assetLine.test(line) ? [...acc, index] : acc), []);
   return starts.map((start, index) => lines.slice(start, starts[index + 1] ?? Math.min(lines.length, start + 10)).join(' '));
 }
 
 function findFttBlockStart(lines, idLine, lowerBound) {
-  const assetOrPayout = /[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?|\d{2,3}\s*%/;
+  const assetOrPayout = /[A-Z0-9]{3}\s*\/\s*[A-Z0-9]{2,3}(?:\s*\(OTC\))?|(^|[^\d.])\d{2,3}\s*%/i;
   for (let i = idLine; i >= lowerBound; i -= 1) {
     if (assetOrPayout.test(lines[i])) return i;
   }
@@ -2038,24 +2083,24 @@ function findFttBlockStart(lines, idLine, lowerBound) {
 
 function parseFttTextBlock(block, uuid) {
   if (/\b(Buy|Sell)\b|\blot\b|Open price|Close price|P\/L|Commission|Equity|Closed by|Stop\s*out/i.test(block)) return null;
-  const asset = block.match(/[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?|XAU\s*\/?\s*USD(?:\s*\(OTC\))?|XAG\s*\/?\s*USD(?:\s*\(OTC\))?/i);
+  const asset = block.match(/[A-Z0-9]{3}\s*\/\s*[A-Z0-9]{2,3}(?:\s*\(OTC\))?|XAU\s*\/?\s*USD(?:\s*\(OTC\))?|XAG\s*\/?\s*USD(?:\s*\(OTC\))?/i);
   const id = block.match(uuid);
-  const pct = block.match(/(\d{2,3})\s*%/);
-  const values = extractMoneyValues(block);
+  const pct = extractFttPayout(block);
+  const values = extractFttMoneyValues(block, id?.[0]);
   if ((!asset && !id) || !values.length) return null;
   const quotes = extractFttQuotes(block);
   const dates = parseVisibleDates(block);
   const amount = values[0];
-  const income = values.length > 1 ? values[values.length - 1] : values[0];
+  const income = values.length > 1 ? values[values.length - 1] : inferFttIncomeFromBlock(block, values[0]);
   return makeTrade({
     market: 'FTT',
     sourceId: id?.[0],
     account: 'Quotex',
-    asset: asset ? normalizeAsset(asset[0].replace(/\s*\/\s*/, '/').toUpperCase()) : 'FTT trade',
+    asset: asset ? normalizeOcrAsset(asset[0]) : 'FTT trade',
     direction: inferFttDirection(block, quotes.open, quotes.close, income - amount),
     amount,
     income,
-    payout: pct?.[1],
+    payout: pct,
     open: quotes.open,
     close: quotes.close,
     openedAt: quotes.openedAt || dates[0] || new Date().toISOString(),
@@ -2124,16 +2169,65 @@ function extractMoneyValues(block) {
   return extractDecimalNumbers(block, 2, 2).filter((value) => Math.abs(value) < 100000);
 }
 
+function extractFttMoneyValues(block, sourceId = '') {
+  let zone = String(block || '');
+  if (sourceId && zone.includes(sourceId)) {
+    const sourceIndex = zone.indexOf(sourceId);
+    zone = `${zone.slice(0, sourceIndex)} ${zone.slice(sourceIndex + sourceId.length)}`;
+  }
+  zone = zone
+    .replace(/\d{1,6}(?:\.\d{1,6})?\s+\d{1,2}\/\d{1,2}\/20\d{2},?\s+\d{1,2}:\d{2}(?::\d{2})?/g, ' ')
+    .replace(/\b20\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\b/g, ' ')
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, ' ')
+    .replace(/Opening\s+quote|Closing\s+quote/gi, ' ');
+  const values = [];
+  for (const match of zone.matchAll(/([+-]?\s*\d{1,6}(?:[.,]\d{1,3})?)\s*([$S8%])?/gi)) {
+    const token = match[1];
+    const symbol = match[2] || '';
+    const value = parseOcrMoneyToken(token, symbol);
+    if (!Number.isFinite(value)) continue;
+    const hasDecimal = /[.,]\d/.test(token);
+    if (symbol === '%' && !hasDecimal && value >= 50 && value <= 100) continue;
+    if (!symbol && value >= 50 && value <= 100 && /%\s*$/.test(zone.slice(match.index, match.index + match[0].length + 2))) continue;
+    if (value > 100000) continue;
+    values.push(value);
+  }
+  return values.slice(-2);
+}
+
+function extractFttPayout(block) {
+  for (const match of String(block || '').matchAll(/(^|[^\d.])(\d{2,3})\s*%/g)) {
+    const value = toNumber(match[2]);
+    if (value >= 50 && value <= 100) return value;
+  }
+  return '';
+}
+
+function parseOcrMoneyToken(token, symbol = '') {
+  let text = String(token || '').replace(/\s+/g, '').replace(',', '.');
+  if (!text) return NaN;
+  const decimal = text.match(/^([+-]?\d+)\.(\d{3})$/);
+  if (!symbol && decimal && /[58]$/.test(decimal[2])) text = `${decimal[1]}.${decimal[2].slice(0, 2)}`;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function inferFttIncomeFromBlock(block, amount) {
+  if (/\b0[.,]0{1,2}[8S$%]?\b/.test(block)) return 0;
+  return amount;
+}
+
 function extractFttQuotes(block) {
   const open = block.match(/Opening\s+quote:?\s*(\d{1,6}(?:\.\d{1,6})?)\s+(\d{2}\/\d{2}\/\d{4},?\s*\d{2}:\d{2}(?::\d{2})?)/i);
   const close = block.match(/Closing\s+quote:?\s*(\d{1,6}(?:\.\d{1,6})?)\s+(\d{2}\/\d{2}\/\d{4},?\s*\d{2}:\d{2}(?::\d{2})?)/i);
+  const datedQuotes = [...String(block || '').matchAll(/(\d{1,6}(?:\.\d{1,6})?)\s+(\d{1,2}\/\d{1,2}\/\d{4},?\s*\d{1,2}:\d{2}(?::\d{2})?)/g)];
   const prices = extractDecimalNumbers(block, 3, 6);
   const dates = parseVisibleDates(block);
   return {
-    open: open?.[1] || prices[0] || '',
-    close: close?.[1] || prices[1] || '',
-    openedAt: open?.[2] ? parseVisibleDate(open[2]) : dates[0] || '',
-    closedAt: close?.[2] ? parseVisibleDate(close[2]) : dates[1] || '',
+    open: open?.[1] || datedQuotes[0]?.[1] || prices[0] || '',
+    close: close?.[1] || datedQuotes[1]?.[1] || prices[1] || '',
+    openedAt: open?.[2] ? parseVisibleDate(open[2]) : datedQuotes[0]?.[2] ? parseVisibleDate(datedQuotes[0][2]) : dates[0] || '',
+    closedAt: close?.[2] ? parseVisibleDate(close[2]) : datedQuotes[1]?.[2] ? parseVisibleDate(datedQuotes[1][2]) : dates[1] || '',
   };
 }
 
@@ -2161,6 +2255,17 @@ function inferFttDirection(block, open, close, profit) {
   if (openValue && closeValue && profit < 0) return closeValue >= openValue ? 'DOWN' : 'UP';
   if (openValue && closeValue) return closeValue >= openValue ? 'UP' : 'DOWN';
   return 'UP';
+}
+
+function normalizeOcrAsset(value) {
+  let text = clean(value).replace(/\s*\/\s*/, '/').toUpperCase();
+  text = text
+    .replace(/\bUS[BO0P]\//, 'USD/')
+    .replace(/\bUSD\/PY\b/, 'USD/JPY')
+    .replace(/\/[I1L]PY\b/, '/JPY')
+    .replace(/\/PY\b/, '/JPY')
+    .replace(/\bA[UO0]D\//, 'AUD/');
+  return normalizeAsset(text);
 }
 
 function buildCfdBlocks(lines, ticket) {
