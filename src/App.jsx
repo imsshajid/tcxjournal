@@ -6,6 +6,8 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Edit3,
   Eye,
@@ -61,8 +63,11 @@ const DEFAULT_SETTINGS = {
   enabled: { FTT: true, CFD: true },
   defaultMarket: 'ALL',
   ocrMode: 'AUTO',
+  maxTrades: 5000,
+  archiveAfterDays: 365,
 };
 const IMPORT_LATER_KEY = 'tcxjournal.importLater.v1';
+const MAX_TRANSACTIONS = 1500;
 const STRATEGIES = ['Unclassified', 'Signal Following', 'Stochastic', 'Price Action', 'Support & Resistance', 'Trend Following', 'Breakout', 'Reversal', 'Scalping', 'News Trading', 'Fibonacci', 'Moving Average', 'Bollinger Bands', 'RSI Divergence', 'OTC Strategy'];
 const EMOTIONS = ['Calm', 'Confident', 'Anxious', 'Fearful', 'Greedy', 'Revenge', 'Bored', 'Focused', 'Patient', 'Neutral'];
 const TIMEFRAMES = ['10s', '15s', '30s', '1m', '2m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
@@ -178,8 +183,8 @@ function makeTrade(input) {
     result: tradeResult(netProfit),
     open: cleanNumber(input.open ?? input.openingPrice ?? input.opening_price),
     close: cleanNumber(input.close ?? input.closingPrice ?? input.closing_price),
-    openedAt: toIso(input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
-    closedAt: toIso(input.closedAt || input.closingTime || input.closing_time_utc || input.close_time),
+    openedAt: toIso(input.openedAt || input.openingTime || input.opening_time_utc || input.open_time, 'local', ''),
+    closedAt: toIso(input.closedAt || input.closingTime || input.closing_time_utc || input.close_time, 'local', ''),
     duration: input.duration || input.timeframe || durationBetween(input.openedAt || input.openingTime, input.closedAt || input.closingTime),
     strategy: normalizeStrategy(input.strategy),
     session: normalizeSession(input.session, input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
@@ -196,13 +201,14 @@ function makeTrade(input) {
 function saved() {
   try {
     const parsed = JSON.parse(localStorage.getItem(LS));
-    if (!parsed) return { trades: seedTrades, settings: DEFAULT_SETTINGS };
+    if (!parsed) return { trades: seedTrades, transactions: [], settings: DEFAULT_SETTINGS };
     return {
       trades: (parsed.trades || seedTrades).map((t) => makeTrade(t)),
+      transactions: (parsed.transactions || []).map(makeTransaction),
       settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}), enabled: { ...DEFAULT_SETTINGS.enabled, ...(parsed.settings?.enabled || {}) } },
     };
   } catch {
-    return { trades: seedTrades, settings: DEFAULT_SETTINGS };
+    return { trades: seedTrades, transactions: [], settings: DEFAULT_SETTINGS };
   }
 }
 
@@ -219,6 +225,7 @@ function savedForUser(uid) {
 function normalizeJournal(journal) {
   return {
     trades: (journal?.trades || []).map((trade) => makeTrade(trade)),
+    transactions: (journal?.transactions || []).map(makeTransaction),
     settings: {
       ...DEFAULT_SETTINGS,
       ...(journal?.settings || {}),
@@ -238,6 +245,33 @@ function mergeTrades(primary, secondary = []) {
     }
   });
   return merged.sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
+}
+
+function makeTransaction(input) {
+  const type = /with|payout/i.test(input.type) ? 'WITHDRAWAL' : 'DEPOSIT';
+  return {
+    id: input.id || input.sourceId || crypto.randomUUID(),
+    sourceId: clean(input.sourceId || input.invoice || ''),
+    provider: input.provider || 'Imported',
+    account: input.account || '',
+    type,
+    amount: Math.abs(toNumber(input.amount)),
+    currency: input.currency || 'USD',
+    occurredAt: toIso(input.occurredAt || input.date, input.zone || 'local', ''),
+    status: title(input.status || 'Succeeded'),
+    fingerprint: input.fingerprint || '',
+    importedAt: input.importedAt || new Date().toISOString(),
+  };
+}
+
+function mergeTransactions(primary = [], secondary = []) {
+  const seen = new Set();
+  return [...primary, ...secondary].map(makeTransaction).filter((item) => {
+    const key = transactionKey(item);
+    if (!item.occurredAt || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt));
 }
 
 function App() {
@@ -294,12 +328,13 @@ function App() {
         const cloud = await getCloud();
         const remote = await cloud.loadCloudJournal(user.uid);
         const userCache = savedForUser(user.uid);
-        const hasRemote = Boolean(remote.trades.length || remote.settings);
+        const hasRemote = Boolean(remote.trades.length || remote.transactions?.length || remote.settings);
         const base = hasRemote
           ? normalizeJournal(remote)
           : (userCache || normalizeJournal({ trades: [], settings: DEFAULT_SETTINGS }));
         const merged = {
           trades: hasRemote ? mergeTrades(base.trades, userCache?.trades) : mergeTrades(base.trades),
+          transactions: hasRemote ? mergeTransactions(base.transactions, userCache?.transactions) : mergeTransactions(base.transactions),
           settings: remote.settings ? normalizeJournal({ settings: remote.settings }).settings : base.settings,
         };
         setData(merged);
@@ -406,11 +441,24 @@ function App() {
         fresh.push(trade);
       }
     }
-    if (fresh.length) {
-      setData((current) => ({ ...current, trades: [...fresh, ...current.trades] }));
-      syncCloud((uid, cloud) => cloud.saveCloudTrades(uid, fresh));
+    const remaining = Math.max(0, data.settings.maxTrades - data.trades.length);
+    const accepted = fresh.slice(0, remaining);
+    if (accepted.length) {
+      setData((current) => ({ ...current, trades: [...accepted, ...current.trades] }));
+      syncCloud((uid, cloud) => cloud.saveCloudTrades(uid, accepted));
     }
-    return { added: fresh.length, skipped: normalized.length - fresh.length, detected: normalized.length };
+    return { added: accepted.length, skipped: normalized.length - fresh.length, limited: fresh.length - accepted.length, detected: normalized.length };
+  };
+
+  const importTransactions = (items) => {
+    const existing = new Set(data.transactions.map(transactionKey));
+    const fresh = mergeTransactions(items).filter((item) => !existing.has(transactionKey(item)));
+    const accepted = fresh.slice(0, Math.max(0, MAX_TRANSACTIONS - data.transactions.length));
+    if (accepted.length) {
+      setData((current) => ({ ...current, transactions: mergeTransactions(accepted, current.transactions) }));
+      syncCloud((uid, cloud) => cloud.saveCloudTransactions(uid, accepted));
+    }
+    return { added: accepted.length, skipped: items.length - fresh.length, limited: fresh.length - accepted.length };
   };
 
   const saveTrade = (trade) => importTrades([trade]);
@@ -438,6 +486,17 @@ function App() {
     setData((current) => ({ ...current, settings: nextSettings }));
     syncCloud((uid, cloud) => cloud.saveCloudSettings(uid, nextSettings));
     if (settings.defaultMarket) setMarket(settings.defaultMarket);
+  };
+  const archiveOldTrades = () => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - data.settings.archiveAfterDays);
+    const old = data.trades.filter((trade) => new Date(trade.openedAt) < cutoff);
+    if (!old.length) return 0;
+    exportTradesCsv(old, `tcxjournal-archive-before-${dateKey(cutoff)}.csv`);
+    const ids = new Set(old.map((trade) => trade.id));
+    setData((current) => ({ ...current, trades: current.trades.filter((trade) => !ids.has(trade.id)) }));
+    syncCloud((uid, cloud) => cloud.deleteCloudTrades(uid, [...ids]));
+    return old.length;
   };
   const pickDate = (key) => setSelectedDate((current) => (current === key ? '' : key));
   const openCalendarDay = (key) => {
@@ -472,7 +531,8 @@ function App() {
         )}
         {page === 'New Trade' && <NewTrade onSave={saveTrade} onImport={importTrades} settings={data.settings} onOpenTrade={setActiveTrade} />}
         {page === 'History' && <History trades={trades} deleteTrade={removeTrade} onOpenTrade={setActiveTrade} onEditTrade={setEditingTrade} />}
-        {page === 'Analytics' && <Analytics trades={trades} />}
+        {page === 'Analytics' && <Analytics trades={trades} transactions={data.transactions} />}
+        {page === 'Transactions' && <TransactionsPage transactions={data.transactions} trades={data.trades} onImport={importTransactions} settings={data.settings} />}
         {page === 'Calendar' && (
           <CalendarPage
             trades={trades}
@@ -484,7 +544,7 @@ function App() {
             onEditTrade={setEditingTrade}
           />
         )}
-        {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} authState={authState} openAccount={() => setAccountOpen(true)} />}
+        {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} authState={authState} openAccount={() => setAccountOpen(true)} trades={data.trades} transactions={data.transactions} onArchive={archiveOldTrades} />}
       </main>
       <BottomNav page={page} setPage={setPage} />
       {accountOpen && (
@@ -537,6 +597,7 @@ function Sidebar({ page, setPage, open, setOpen }) {
     ['History', WalletCards],
     ['Analytics', Activity],
     ['Calendar', CalendarDays],
+    ['Transactions', WalletCards],
     ['Settings', Settings],
   ];
   return (
@@ -632,6 +693,8 @@ function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate
           title={selectedDate ? `Trades on ${formatDate(selectedDate)}` : 'Recent Trades'}
           trades={shownTrades}
           compact
+          hideSession
+          className="recentTradeCard"
           onOpenTrade={onOpenTrade}
           onEditTrade={onEditTrade}
         />
@@ -671,10 +734,16 @@ function Stats({ trades }) {
 
 function EquityPanel({ trades, title = 'Equity Curve' }) {
   let running = 0;
-  const singleDay = trades.length > 0 && new Set(trades.map((t) => dateKey(t.openedAt))).size === 1;
   const data = [...trades]
     .sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt))
-    .map((t) => ({ date: singleDay ? timeOnly(t.openedAt) : shortDate(t.openedAt), pnl: running += toNumber(t.profit) }));
+    .map((t, index) => ({
+      index,
+      label: `${shortDate(t.openedAt)} ${timeOnly(t.openedAt)}`,
+      pnl: running += toNumber(t.profit),
+      tradePnl: toNumber(t.profit),
+      asset: t.asset,
+      result: t.result,
+    }));
   return (
     <div className="card chartXL">
       <PanelTitle title={title} tag="Cumulative" />
@@ -687,10 +756,15 @@ function EquityPanel({ trades, title = 'Equity Curve' }) {
             </linearGradient>
           </defs>
           <CartesianGrid stroke="rgba(255,255,255,.06)" />
-          <XAxis dataKey="date" stroke="#7f8da1" />
+          <XAxis dataKey="label" stroke="#7f8da1" minTickGap={48} />
           <YAxis stroke="#7f8da1" />
-          <Tooltip contentStyle={tooltipStyle} formatter={(v) => money(v)} />
-          <Area type="monotone" dataKey="pnl" stroke="#35d49a" strokeWidth={2.5} fill="url(#equityFill)" />
+          <Tooltip
+            cursor={{ stroke: 'rgba(106,169,255,.55)', strokeDasharray: '4 4' }}
+            contentStyle={tooltipStyle}
+            labelFormatter={(_, payload) => payload?.[0]?.payload ? `${payload[0].payload.asset} - ${payload[0].payload.label}` : ''}
+            formatter={(value, name, item) => [money(value), `Balance (${item?.payload?.result || ''} ${money(item?.payload?.tradePnl || 0)})`]}
+          />
+          <Area type="monotone" dataKey="pnl" stroke="#35d49a" strokeWidth={2.5} fill="url(#equityFill)" activeDot={{ r: 6, strokeWidth: 2 }} dot={data.length < 40} />
         </AreaChart>
       </ResponsiveContainer>
     </div>
@@ -744,27 +818,22 @@ function OutcomePanel({ trades }) {
 }
 
 function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade }) {
-  const [showAll, setShowAll] = useState(false);
-  const listTrades = selectedDate ? selectedTrades : (showAll ? trades : trades.slice(0, 8));
-  const sideTrades = selectedDate ? selectedTrades : trades;
+  const [range, setRange] = useState('month');
+  const [pageIndex, setPageIndex] = useState(0);
+  const pageSize = useResponsivePageSize();
+  const anchor = selectedDate || trades[0]?.openedAt || new Date().toISOString();
+  const sideTrades = useMemo(() => filterTradesByPeriod(trades, range, anchor), [trades, range, anchor]);
+  const sorted = [...sideTrades].sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
+  const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const safePage = Math.min(pageIndex, pages - 1);
+  const listTrades = sorted.slice(safePage * pageSize, (safePage + 1) * pageSize);
   return (
     <section className="page calendarPage">
-      <CalendarPanel trades={trades} selectedDate={selectedDate} onDatePick={onDatePick} full />
+      <div className="rangeBar"><b>Focus range</b><div className="segmented inline">{['day', 'week', 'month', 'year'].map((item) => <button key={item} className={range === item ? 'on' : ''} onClick={() => { setRange(item); setPageIndex(0); }}>{title(item)}</button>)}</div><span>{periodLabel(range, anchor)}</span></div>
+      <CalendarPanel trades={trades} selectedDate={selectedDate} onDatePick={(key) => { setRange('day'); setPageIndex(0); onDatePick(key); }} full />
       <div className="calendarSide">
         <CalendarInsightPanel trades={sideTrades} selectedDate={selectedDate} />
-        <TradeList
-          title={selectedDate ? `Trades on ${formatDate(selectedDate)}` : showAll ? 'All Trades' : 'Recent Trades'}
-          trades={listTrades}
-          empty="No trades on this day."
-          deleteTrade={undefined}
-          onOpenTrade={onOpenTrade}
-          onEditTrade={onEditTrade}
-          actionSlot={
-            <button className="soft tiny" onClick={() => setShowAll((current) => !current)}>
-              {showAll ? 'Recent' : 'All trades'}
-            </button>
-          }
-        />
+        <div className="calendarTrades"><TradeList title="Recent Trades" trades={listTrades} empty="No trades in this range." onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} /><Pagination page={safePage} pages={pages} total={sorted.length} pageSize={pageSize} onChange={setPageIndex} /></div>
         {selectedDate && <button className="soft clearDay" onClick={clearDate}>Show recent trades</button>}
       </div>
     </section>
@@ -864,7 +933,7 @@ function StrategyPanel({ trades }) {
   );
 }
 
-function TradeList({ title = 'Trade History', trades, compact = false, deleteTrade, empty = 'No trades yet.', onOpenTrade, onEditTrade, actionSlot }) {
+function TradeList({ title = 'Trade History', trades, compact = false, hideSession = false, className = '', deleteTrade, empty = 'No trades yet.', onOpenTrade, onEditTrade, actionSlot }) {
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
   const groups = useMemo(() => groupTradesForJournal(trades), [trades]);
   const collapsedCount = groups.filter((group) => group.trades.length > 1).length;
@@ -882,7 +951,7 @@ function TradeList({ title = 'Trade History', trades, compact = false, deleteTra
     const open = () => multiple ? toggleGroup(group.id) : onOpenTrade?.(trade);
     return (
       <div
-        className={`trow tradeButton ${multiple ? 'tradeGroup' : ''} ${child ? 'groupChild' : ''}`}
+        className={`trow tradeButton ${hideSession ? 'noSession' : ''} ${multiple ? 'tradeGroup' : ''} ${child ? 'groupChild' : ''}`}
         key={child ? trade.id : group?.id || trade.id}
         role="button"
         tabIndex={0}
@@ -894,7 +963,7 @@ function TradeList({ title = 'Trade History', trades, compact = false, deleteTra
           <small>{shortDate(trade.openedAt)} - {timeOnly(trade.openedAt)} - {trade.market} {trade.direction}</small>
         </div>
         <span className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i></span>
-        <span>{trade.session}<small>{multiple ? `Closes ${timeOnly(trade.closedAt)}` : trade.duration || 'Timed trade'}</small></span>
+        {!hideSession && <span>{trade.session}<small>{multiple ? `Closes ${timeOnly(trade.closedAt)}` : trade.duration || 'Timed trade'}</small></span>}
         <span className={trade.profit >= 0 ? 'green' : 'red'}>
           {money(trade.profit)}
           {multiple
@@ -919,11 +988,11 @@ function TradeList({ title = 'Trade History', trades, compact = false, deleteTra
   };
 
   return (
-    <div className={`card tableCard ${compact ? '' : 'wideCard'}`}>
+    <div className={`card tableCard ${compact ? '' : 'wideCard'} ${className}`}>
       <PanelTitle title={title} tag={`${trades.length} trades${collapsedCount ? ` - ${groups.length} rows` : ''}`} action={actionSlot} />
       <div className="table">
-        <div className="trow head">
-          <span>Trade</span><span>Setup</span><span>Session</span><span>Result</span>{!compact && <span />}
+        <div className={`trow head ${hideSession ? 'noSession' : ''}`}>
+          <span>Trade</span><span>Setup</span>{!hideSession && <span>Session</span>}<span>Result</span>{!compact && <span />}
         </div>
         {groups.map((group) => (
           <React.Fragment key={group.id}>
@@ -944,6 +1013,7 @@ function TradeList({ title = 'Trade History', trades, compact = false, deleteTra
 function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
   const [market, setMarket] = useState(settings.defaultMarket === 'CFD' ? 'CFD' : 'FTT');
   const [status, setStatus] = useState('');
+  const [reviewing, setReviewing] = useState(false);
   const [form, setForm] = useState({
     account: 'Quotex',
     asset: 'USD/JPY',
@@ -996,8 +1066,8 @@ function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
             <h2>New Trade</h2>
           </div>
         </div>
-        <Importer onImport={onImport} settings={settings} />
-        <div className="orDivider"><span>or fill manually</span></div>
+        <Importer onImport={onImport} settings={settings} onReviewChange={setReviewing} />
+        {!reviewing && <><div className="orDivider"><span>or fill manually</span></div>
           <div className="manualTicket">
             <div className="segmented inline">
               {['FTT', 'CFD'].filter((m) => settings.enabled[m]).map((m) => (
@@ -1008,12 +1078,13 @@ function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
             <button className="primary save" onClick={save}><Check size={18} />Save trade</button>
             {status && <p className="status">{status}</p>}
           </div>
+        </>}
       </div>
     </section>
   );
 }
 
-function Importer({ onImport, settings }) {
+function Importer({ onImport, settings, onReviewChange }) {
   const [mode, setMode] = useState(settings.ocrMode || 'AUTO');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
@@ -1022,6 +1093,31 @@ function Importer({ onImport, settings }) {
   });
   const [activeIndex, setActiveIndex] = useState(0);
   const fileRef = useRef();
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => onReviewChange?.(Boolean(drafts.length)), [drafts.length, onReviewChange]);
+  useEffect(() => {
+    let depth = 0;
+    const enter = (event) => { event.preventDefault(); depth += 1; setDragging(true); };
+    const over = (event) => event.preventDefault();
+    const leave = (event) => { event.preventDefault(); depth = Math.max(0, depth - 1); if (!depth) setDragging(false); };
+    const drop = (event) => {
+      event.preventDefault();
+      depth = 0;
+      setDragging(false);
+      handleFiles(event.dataTransfer?.files);
+    };
+    document.addEventListener('dragenter', enter);
+    document.addEventListener('dragover', over);
+    document.addEventListener('dragleave', leave);
+    document.addEventListener('drop', drop);
+    return () => {
+      document.removeEventListener('dragenter', enter);
+      document.removeEventListener('dragover', over);
+      document.removeEventListener('dragleave', leave);
+      document.removeEventListener('drop', drop);
+    };
+  }, [mode]);
 
   async function handleFiles(fileList) {
     const files = [...(fileList || [])];
@@ -1067,7 +1163,7 @@ function Importer({ onImport, settings }) {
   }));
   const saveDrafts = () => {
     const result = onImport(drafts);
-    setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.`);
+    setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.${result.limited ? ` ${result.limited} over the storage limit.` : ''}`);
     setDrafts([]);
     setActiveIndex(0);
     localStorage.removeItem(IMPORT_LATER_KEY);
@@ -1087,6 +1183,7 @@ function Importer({ onImport, settings }) {
 
   return (
     <div className="importer">
+      {dragging && <div className="dropOverlay"><UploadCloud size={42} /><b>Drop files anywhere</b><span>Images, CSV, XLS, or XLSX</span></div>}
       <div className="importControls">
         <div className="segmented inline">
           {['AUTO', 'FTT', 'CFD'].map((name) => <button key={name} className={mode === name ? 'on' : ''} onClick={() => setMode(name)}>{name}</button>)}
@@ -1125,8 +1222,7 @@ function Importer({ onImport, settings }) {
             </div>
           </div>
           <div className="modalActions importActions">
-            <button className="soft dangerText" onClick={skipAll}><X size={16} />Skip all</button>
-            <button className="soft" onClick={logLater}><StickyNote size={16} />Log later</button>
+            <div className="reviewSecondary"><button className="soft dangerText" onClick={skipAll}><X size={16} />Skip all</button><button className="soft" onClick={logLater}><StickyNote size={16} />Log later</button></div>
             <button className="primary" onClick={saveDrafts}><Check size={18} />Save all reviewed trades</button>
           </div>
         </div>
@@ -1136,6 +1232,19 @@ function Importer({ onImport, settings }) {
 }
 
 function History({ trades, deleteTrade, onOpenTrade, onEditTrade }) {
+  const [sort, setSort] = useState('newest');
+  const [pageIndex, setPageIndex] = useState(0);
+  const pageSize = useResponsivePageSize();
+  const sorted = useMemo(() => [...trades].sort((a, b) => {
+    if (sort === 'oldest') return new Date(a.openedAt) - new Date(b.openedAt);
+    if (sort === 'profit') return b.profit - a.profit;
+    if (sort === 'loss') return a.profit - b.profit;
+    if (sort === 'asset') return a.asset.localeCompare(b.asset);
+    return new Date(b.openedAt) - new Date(a.openedAt);
+  }), [trades, sort]);
+  const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const safePage = Math.min(pageIndex, pageCount - 1);
+  const visible = sorted.slice(safePage * pageSize, (safePage + 1) * pageSize);
   const exportCsv = () => {
     const headers = ['market', 'sourceId', 'asset', 'direction', 'amount', 'income', 'payout', 'profit', 'open', 'close', 'openedAt', 'closedAt', 'closeReason'];
     const rows = trades.map((trade) => headers.map((key) => csvCell(trade[key])).join(','));
@@ -1144,55 +1253,136 @@ function History({ trades, deleteTrade, onOpenTrade, onEditTrade }) {
   return (
     <section className="page">
       <div className="toolbar">
+        <label className="sortControl"><span>Sort</span><select value={sort} onChange={(event) => { setSort(event.target.value); setPageIndex(0); }}><option value="newest">Latest first</option><option value="oldest">Oldest first</option><option value="profit">Highest profit</option><option value="loss">Largest loss</option><option value="asset">Asset A-Z</option></select></label>
         <button className="soft" onClick={exportCsv}><Download size={17} />Export CSV</button>
       </div>
-      <TradeList trades={trades} deleteTrade={deleteTrade} onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} />
+      <TradeList trades={visible} deleteTrade={deleteTrade} onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} />
+      <Pagination page={safePage} pages={pageCount} total={sorted.length} pageSize={pageSize} onChange={setPageIndex} />
     </section>
   );
 }
 
-function Analytics({ trades }) {
-  const byAsset = Object.entries(trades.reduce((acc, trade) => {
-    acc[trade.asset] = (acc[trade.asset] || 0) + toNumber(trade.profit);
+function Pagination({ page, pages, total, pageSize, onChange }) {
+  if (pages <= 1) return null;
+  return <div className="pagination"><span>{page * pageSize + 1}-{Math.min(total, (page + 1) * pageSize)} of {total}</span><button className="soft" disabled={!page} onClick={() => onChange(page - 1)}><ChevronLeft size={16} />Previous</button><b>{page + 1} / {pages}</b><button className="soft" disabled={page >= pages - 1} onClick={() => onChange(page + 1)}>Next<ChevronRight size={16} /></button></div>;
+}
+
+function useResponsivePageSize() {
+  const calculate = () => window.innerHeight >= 980 ? 20 : window.innerHeight >= 760 ? 15 : 10;
+  const [size, setSize] = useState(calculate);
+  useEffect(() => {
+    const resize = () => setSize(calculate());
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, []);
+  return size;
+}
+
+function Analytics({ trades, transactions = [] }) {
+  const [period, setPeriod] = useState('all');
+  const [venue, setVenue] = useState('all');
+  const [assetClass, setAssetClass] = useState('all');
+  const [edge, setEdge] = useState('asset');
+  const filtered = useMemo(() => trades.filter((trade) => {
+    const after = periodStart(period);
+    if (after && new Date(trade.openedAt) < after) return false;
+    if (venue === 'otc' && !/\(OTC\)/i.test(trade.asset)) return false;
+    if (venue === 'real' && /\(OTC\)/i.test(trade.asset)) return false;
+    if (assetClass !== 'all' && classifyAsset(trade.asset) !== assetClass) return false;
+    return true;
+  }), [trades, period, venue, assetClass]);
+  const rowsFor = (key) => Object.entries(filtered.reduce((acc, trade) => {
+    const label = key === 'venue' ? (/\(OTC\)/i.test(trade.asset) ? 'OTC' : 'Real market') : key === 'assetClass' ? title(classifyAsset(trade.asset)) : trade[key] || 'Unknown';
+    acc[label] = (acc[label] || 0) + toNumber(trade.profit);
     return acc;
   }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const byEmotion = Object.entries(trades.reduce((acc, trade) => {
-    acc[trade.emotion] = (acc[trade.emotion] || 0) + toNumber(trade.profit);
-    return acc;
-  }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const bySession = Object.entries(trades.reduce((acc, trade) => {
-    acc[trade.session] = (acc[trade.session] || 0) + toNumber(trade.profit);
-    return acc;
-  }, {})).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const biggestWin = [...trades].sort((a, b) => b.profit - a.profit)[0];
-  const biggestLoss = [...trades].sort((a, b) => a.profit - b.profit)[0];
+  const edgeRows = rowsFor(edge);
+  const streaks = longestStreaks(filtered);
+  const cycles = buildFundingCycles(transactions, trades);
+  const activeCycle = cycles[cycles.length - 1];
+  const settledTransactions = transactions.filter(isSettledTransaction);
+  const hypothetical = sum(settledTransactions.filter((item) => item.type === 'DEPOSIT'), 'amount') - sum(settledTransactions.filter((item) => item.type === 'WITHDRAWAL'), 'amount') + sum(trades, 'profit');
   return (
     <section className="page analyticsPage">
-      <Stats trades={trades} />
+      <div className="analyticsControls card"><div><b>Time</b><select value={period} onChange={(e) => setPeriod(e.target.value)}><option value="all">All time</option><option value="day">Today</option><option value="week">This week</option><option value="month">This month</option><option value="year">This year</option></select></div><div><b>Venue</b><select value={venue} onChange={(e) => setVenue(e.target.value)}><option value="all">OTC + real</option><option value="otc">OTC only</option><option value="real">Real market</option></select></div><div><b>Asset class</b><select value={assetClass} onChange={(e) => setAssetClass(e.target.value)}><option value="all">All assets</option><option value="currency">Currency pairs</option><option value="crypto">Crypto</option><option value="commodity">Commodities</option><option value="index">Indices / stocks</option></select></div><span>{filtered.length} matching trades</span></div>
+      <Stats trades={filtered} />
       <div className="analyticsGrid">
-        <EquityPanel trades={trades} />
-        <OutcomePanel trades={trades} />
+        <EquityPanel trades={filtered} />
+        <OutcomePanel trades={filtered} />
         <div className="card insightCard">
-          <PanelTitle title="Edge Map" tag="Ranked" />
-          <MiniRank title="Assets" rows={byAsset.slice(0, 6)} />
-          <MiniRank title="Emotions" rows={byEmotion.slice(0, 6)} />
+          <PanelTitle title="Edge Map" tag="Selectable" />
+          <select className="edgeSelect" value={edge} onChange={(event) => setEdge(event.target.value)}><option value="asset">Asset</option><option value="strategy">Strategy</option><option value="emotion">Emotion</option><option value="session">Session</option><option value="venue">OTC vs real</option><option value="assetClass">Asset class</option><option value="direction">Direction</option></select>
+          <MiniRank title={title(edge)} rows={edgeRows.slice(0, 10)} />
         </div>
         <div className="card insightCard">
-          <PanelTitle title="Session Quality" tag="P&L" />
-          <MiniRank title="Sessions" rows={bySession.slice(0, 4)} />
+          <PanelTitle title="Momentum" tag="Streaks" />
           <div className="detailGrid">
-            <Info label="Biggest win" value={biggestWin ? `${biggestWin.asset} ${money(biggestWin.profit)}` : '-'} />
-            <Info label="Biggest loss" value={biggestLoss ? `${biggestLoss.asset} ${money(biggestLoss.profit)}` : '-'} />
+            <Info label="Best streak" value={`${streaks.wins} wins`} />
+            <Info label="Worst streak" value={`${streaks.losses} losses`} />
+            <Info label="Current run" value={`${streaks.current.count} ${streaks.current.type.toLowerCase()}`} />
+            <Info label="Filtered P&L" value={money(sum(filtered, 'profit'))} />
           </div>
         </div>
-        <StrategyPanel trades={trades} />
+        <div className="card fundingCard">
+          <PanelTitle title="Funding & Recovery" tag={`${cycles.length} cycle${cycles.length === 1 ? '' : 's'}`} />
+          <div className="detailGrid"><Info label="Hypothetical balance" value={money(hypothetical)} /><Info label="Latest cycle P&L" value={money(activeCycle?.tradePnl || 0)} /><Info label="Recovery window" value={activeCycle ? durationHuman(activeCycle.startedAt, activeCycle.endedAt || new Date()) : '-'} /><Info label="Capital added" value={money(activeCycle?.deposits || 0)} /></div>
+          <p className="mutedCopy">A cycle starts at a deposit and closes at the next withdrawal. Trades inside that window show how efficiently added capital recovered.</p>
+        </div>
+        <StrategyPanel trades={filtered} />
       </div>
     </section>
   );
 }
 
-function SettingsPage({ settings, updateSettings, authState, openAccount }) {
+function TransactionsPage({ transactions, trades, onImport, settings }) {
+  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [page, setPage] = useState(0);
+  const pageSize = useResponsivePageSize();
+  const inputRef = useRef();
+  const pages = Math.max(1, Math.ceil(transactions.length / pageSize));
+  const safePage = Math.min(page, pages - 1);
+  const visible = transactions.slice(safePage * pageSize, (safePage + 1) * pageSize);
+  const cycles = buildFundingCycles(transactions, trades);
+
+  const handleFiles = async (fileList) => {
+    const files = [...(fileList || [])].filter((file) => file.type.startsWith('image/'));
+    if (!files.length) { setStatus('Drop PNG, JPG, or WEBP transaction screenshots.'); return; }
+    setBusy(true);
+    setStatus('Reading transaction screenshots...');
+    try {
+      const detected = [];
+      for (const file of files) {
+        const fingerprint = await hashFile(file);
+        if (transactions.some((item) => item.fingerprint === fingerprint)) continue;
+        const text = await readImageText(file, settings.ocrMode || 'AUTO', setStatus);
+        detected.push(...parseTransactionText(text, fingerprint));
+      }
+      if (!detected.length) throw new Error('no-transactions');
+      const result = onImport(detected);
+      setStatus(`${result.added} transaction(s) saved. ${result.skipped} duplicate(s) ignored.${result.limited ? ` ${result.limited} over the account limit.` : ''}`);
+    } catch {
+      setStatus('No deposit or withdrawal rows were detected. Use a clear full-page transaction history screenshot.');
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  return <section className="page transactionsPage">
+    <div className="card transactionHero"><div><span className="miniCaps">Capital timeline</span><h2>Transactions</h2><p>Import Exness, Quotex, or similar deposit and withdrawal screenshots. Only extracted text records and a duplicate fingerprint are stored.</p></div><label className="transactionDrop" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}><input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(e) => handleFiles(e.target.files)} /><UploadCloud size={26} /><b>{busy ? 'Processing...' : 'Drop screenshots or browse'}</b><span>Duplicate and old rows are ignored</span></label></div>
+    {status && <p className="status card">{status}</p>}
+    <div className="transactionStats"><Info label="Deposited" value={money(sum(transactions.filter((item) => item.type === 'DEPOSIT' && isSettledTransaction(item)), 'amount'))} /><Info label="Withdrawn" value={money(sum(transactions.filter((item) => item.type === 'WITHDRAWAL' && isSettledTransaction(item)), 'amount'))} /><Info label="Funding cycles" value={cycles.length} /><Info label="Trade P&L" value={money(sum(trades, 'profit'))} /></div>
+    <div className="card transactionList"><PanelTitle title="Transaction History" tag={`${transactions.length} records`} />{visible.map((item) => <div className="transactionRow" key={item.id}><span className={item.type === 'DEPOSIT' ? 'transactionIcon deposit' : 'transactionIcon withdrawal'}>{item.type === 'DEPOSIT' ? '+' : '-'}</span><div><b>{title(item.type)}</b><small>{new Date(item.occurredAt).toLocaleString()} - {item.provider}{item.sourceId ? ` - ${item.sourceId}` : ''}</small></div><span className="transactionStatus">{item.status}</span><strong className={item.type === 'DEPOSIT' ? 'green' : 'red'}>{item.type === 'DEPOSIT' ? '+' : '-'}{money(item.amount)}</strong></div>)}{!visible.length && <div className="empty">No transactions imported yet.</div>}</div>
+    <Pagination page={safePage} pages={pages} total={transactions.length} pageSize={pageSize} onChange={setPage} />
+  </section>;
+}
+
+function SettingsPage({ settings, updateSettings, authState, openAccount, trades, transactions, onArchive }) {
   const toggle = (market) => updateSettings({ enabled: { ...settings.enabled, [market]: !settings.enabled[market] } });
+  const [archiveStatus, setArchiveStatus] = useState('');
+  const bytes = new Blob([JSON.stringify({ trades, transactions })]).size;
+  const percent = Math.min(100, trades.length / settings.maxTrades * 100);
   return (
     <section className="page narrow">
       <div className="card settings">
@@ -1212,12 +1402,17 @@ function SettingsPage({ settings, updateSettings, authState, openAccount }) {
         <div className="settingsRows">
           <label><span>Default view</span><select value={settings.defaultMarket} onChange={(e) => updateSettings({ defaultMarket: e.target.value })}><option>ALL</option><option>FTT</option><option>CFD</option></select></label>
           <label><span>OCR preference</span><select value={settings.ocrMode} onChange={(e) => updateSettings({ ocrMode: e.target.value })}><option>AUTO</option><option>FTT</option><option>CFD</option></select></label>
+          <label><span>Archive trades older than</span><select value={settings.archiveAfterDays} onChange={(e) => updateSettings({ archiveAfterDays: Number(e.target.value) })}><option value="90">90 days</option><option value="180">6 months</option><option value="365">1 year</option><option value="730">2 years</option></select></label>
           <div className="toggleRow"><span>FTT journal</span><button className={settings.enabled.FTT ? 'toggle on' : 'toggle'} onClick={() => toggle('FTT')} /></div>
           <div className="toggleRow"><span>CFD journal</span><button className={settings.enabled.CFD ? 'toggle on' : 'toggle'} onClick={() => toggle('CFD')} /></div>
         </div>
         <div className="storageNote">
           <b>Storage</b>
-          <span>{authState.user ? 'Encrypted transport, private Firestore rules, and a local offline copy are active.' : 'Browser storage is active. Sign in to add free private cloud sync.'}</span>
+          <span>{trades.length.toLocaleString()} / {settings.maxTrades.toLocaleString()} trades - {formatBytes(bytes)} compact data</span>
+          <div className="storageMeter"><i style={{ width: `${percent}%` }} /></div>
+          <span>{authState.user ? 'Private cloud sync is active. Screenshots are processed, then discarded to minimize storage.' : 'Browser storage is active. Sign in to add private cloud sync.'}</span>
+          <button className="soft archiveButton" onClick={() => { const count = onArchive(); setArchiveStatus(count ? `${count} trades exported and removed.` : 'No trades are old enough to archive.'); }}><Download size={16} />Export & remove old trades</button>
+          {archiveStatus && <span className="green">{archiveStatus}</span>}
         </div>
         <div className="securityNote"><ShieldCheck size={18} /><div><b>TCX Security</b><span>{authState.security === 'verified' ? 'Google identity verified server-side.' : 'Identity verification activates with cloud sign-in.'}</span></div></div>
       </div>
@@ -1485,7 +1680,8 @@ function TradeFormFields({ draft, set }) {
       </div>
       <div className="fields">
         <AssetSelect value={draft.asset} market={draft.market} onChange={(v) => set('asset', v)} />
-        <Input label="Trade date" type="datetime-local" value={inputDateTime(draft.openedAt)} onChange={(v) => set('openedAt', v)} />
+        <Input label="Open time" type="datetime-local" value={inputDateTime(draft.openedAt)} onChange={(v) => set('openedAt', v)} />
+        <Input label="Close time" type="datetime-local" value={inputDateTime(draft.closedAt)} onChange={(v) => set('closedAt', v)} />
         <Input label={isFtt ? 'Amount ($)' : 'Lot'} type="number" value={draft.amount} onChange={(v) => set('amount', v)} />
         {isFtt ? (
           <Input label="Payout %" type="number" value={draft.payout} onChange={(v) => set('payout', v)} />
@@ -1495,7 +1691,7 @@ function TradeFormFields({ draft, set }) {
         <Input label="Entry price" value={draft.open} onChange={(v) => set('open', v)} />
         <Input label="Exit price" value={draft.close} onChange={(v) => set('close', v)} />
         <Select label="Strategy" value={draft.strategy} onChange={(v) => set('strategy', v)} options={STRATEGIES} />
-        <Select label="Timeframe" value={draft.duration || '1m'} onChange={(v) => set('duration', v)} options={TIMEFRAMES} />
+        <Select label="Timeframe" value={draft.duration || '1m'} onChange={(v) => set('duration', v)} options={TIMEFRAMES.includes(draft.duration) || !draft.duration ? TIMEFRAMES : [draft.duration, ...TIMEFRAMES]} />
         <Select label="Session" value={normalizeSession(draft.session, draft.openedAt)} onChange={(v) => set('session', v)} options={SESSION_OPTIONS} />
         <Select label="Emotion" value={draft.emotion || 'Neutral'} onChange={(v) => set('emotion', v)} options={EMOTIONS} />
       </div>
@@ -1545,13 +1741,18 @@ function Info({ label, value, wide = false }) {
 }
 
 async function parseSheetFile(file) {
-  const rows = file.name.toLowerCase().endsWith('.csv')
-    ? rowsFromMatrix(parseCsv(await file.text()))
-    : rowsFromMatrix(await readXlsxFile(file));
+  let workbook;
+  try {
+    workbook = file.name.toLowerCase().endsWith('.csv') ? parseCsv(await file.text()) : await readXlsxFile(file);
+  } catch (error) {
+    throw new Error(`sheet-read:${error.message}`);
+  }
+  const matrices = Array.isArray(workbook) && workbook[0]?.data ? workbook.map((sheet) => sheet.data) : [workbook];
+  const rows = matrices.flatMap((matrix) => rowsFromMatrix(matrix));
   if (!rows.length) return [];
   const keys = Object.keys(rows[0]).map(normalizeHeader);
-  const isFtt = keys.includes('info') && keys.includes('income') && keys.includes('open_time');
-  const isCfd = keys.includes('ticket') && keys.includes('opening_time_utc') && keys.includes('profit');
+  const isFtt = keys.some((key) => ['info', 'asset', 'instrument'].includes(key)) && keys.some((key) => ['income', 'payout', 'return'].includes(key));
+  const isCfd = keys.some((key) => ['ticket', 'position_id', 'position'].includes(key)) && keys.includes('profit');
   if (!isFtt && !isCfd) throw new Error('no-trades');
   return rows.map((row) => isFtt ? mapFttRow(row) : mapCfdRow(row)).filter(Boolean);
 }
@@ -1562,17 +1763,18 @@ function mapFttRow(row) {
   const income = toNumber(get('Income'));
   return makeTrade({
     market: 'FTT',
-    sourceId: get('ID'),
+    sourceId: get('ID', 'Trade ID', 'Order ID'),
     account: 'Quotex',
-    asset: get('Info'),
-    direction: get('Type'),
+    asset: get('Info', 'Asset', 'Instrument', 'Symbol'),
+    direction: get('Type', 'Direction'),
     amount,
-    income,
-    payout: get('Profit'),
+    income: get('Income', 'Return', 'Result amount'),
+    payout: get('Profit', 'Payout', 'Payout percent'),
     open: get('Open Price'),
     close: get('Close Price'),
-    openedAt: get('Open time'),
-    closedAt: get('Close Time'),
+    openedAt: get('Open time', 'Opening time', 'Opened at', 'Date and time'),
+    closedAt: get('Close Time', 'Closing time', 'Closed at', 'Expiry time'),
+    duration: get('Duration', 'Timeframe', 'Trade timeframe'),
     strategy: 'Unclassified',
   });
 }
@@ -1581,15 +1783,16 @@ function mapCfdRow(row) {
   const get = getter(row);
   return makeTrade({
     market: 'CFD',
-    sourceId: get('ticket'),
+    sourceId: get('ticket', 'position_id', 'position'),
     account: 'CFD',
     asset: slashSymbol(get('symbol')),
     direction: get('type'),
     amount: get('lots') || get('original_position_size'),
     open: get('opening_price'),
     close: get('closing_price'),
-    openedAt: toIso(get('opening_time_utc'), 'utc'),
-    closedAt: toIso(get('closing_time_utc'), 'utc'),
+    openedAt: toIso(get('opening_time_utc', 'open_time', 'opening_time', 'opened_at'), 'utc'),
+    closedAt: toIso(get('closing_time_utc', 'close_time', 'closing_time', 'closed_at'), 'utc'),
+    duration: get('duration', 'timeframe'),
     profit: get('profit'),
     closeReason: get('close_reason'),
     commission: get('commission'),
@@ -1884,7 +2087,13 @@ function getter(row) {
     acc[normalizeHeader(key)] = value;
     return acc;
   }, {});
-  return (name) => entries[normalizeHeader(name)] ?? '';
+  return (...names) => {
+    for (const name of names) {
+      const value = entries[normalizeHeader(name)];
+      if (value !== undefined && value !== '') return value;
+    }
+    return '';
+  };
 }
 
 function normalizeHeader(value) {
@@ -1971,17 +2180,162 @@ function parseVisibleDate(text) {
   return '';
 }
 
-function toIso(value, zone = 'local') {
+function toIso(value, zone = 'local', fallback = new Date().toISOString()) {
   const date = parseTradeDate(value, zone);
   if (!Number.isNaN(date.getTime())) return date.toISOString();
-  return new Date().toISOString();
+  return fallback;
+}
+
+function transactionKey(item) {
+  return item.sourceId ? `${item.provider}:${item.sourceId}`.toLowerCase() : [item.type, item.amount, item.currency, secondKey(item.occurredAt), item.fingerprint].join('|').toLowerCase();
+}
+
+async function hashFile(file) {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function parseTransactionText(text, fingerprint = '') {
+  const source = String(text || '')
+    .replace(/\bo(?=\d)/gi, '0')
+    .replace(/\b(\d{1,2})\s*u+n\b/gi, '$1 Jun')
+    .replace(/([+-])5(?=\d{1,3}[,.])/g, '$1$')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const provider = /exness/i.test(source) ? 'Exness' : /quotex/i.test(source) ? 'Quotex' : 'Imported';
+  const year = source.match(/\b20\d{2}\b/)?.[0] || String(new Date().getFullYear());
+  const markers = [...source.matchAll(/\b(Deposit|Withdrawal|Payout)\b/gi)];
+  const results = [];
+  markers.forEach((marker, index) => {
+    const start = Math.max(0, marker.index - 90);
+    const end = markers[index + 1]?.index || Math.min(source.length, marker.index + 300);
+    const block = source.slice(start, end);
+    const beforeType = block.slice(0, marker.index - start);
+    const amountMatches = [...block.matchAll(/([+-])\s*\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})(?:\s*USD)?|\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})/gi)];
+    const amount = amountMatches.at(-1);
+    const date = parseTransactionDate(block, year);
+    if (!amount || !date) return;
+    const ids = [...block.matchAll(/\b\d{8,15}\b/g)].map((match) => match[0]);
+    const leadingIds = [...beforeType.matchAll(/\b\d{8,15}\b/g)].map((match) => match[0]);
+    const invoice = block.match(/Invoice\s*ID\s*(\d{8,15})/i)?.[1];
+    const sourceId = invoice || leadingIds.at(-1) || ids[0] || '';
+    const type = /with|payout/i.test(marker[1]) ? 'WITHDRAWAL' : 'DEPOSIT';
+    results.push(makeTransaction({
+      id: `${fingerprint.slice(0, 18)}-${index}-${sourceId || date.getTime()}`,
+      sourceId,
+      provider,
+      type,
+      amount: amount[2] || amount[3],
+      occurredAt: date,
+      status: block.match(/Succeeded|Successful|Done|Sent|Rejected|Cancelled/i)?.[0] || 'Succeeded',
+      fingerprint,
+    }));
+  });
+  return mergeTransactions(results);
+}
+
+function parseTransactionDate(text, fallbackYear) {
+  const numeric = text.match(/(\d{1,2})[/.\-](\d{1,2})[/.\-](20\d{2})[, T]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (numeric) return new Date(`${numeric[3]}-${numeric[2].padStart(2, '0')}-${numeric[1].padStart(2, '0')}T${numeric[4].padStart(2, '0')}:${numeric[5]}:${numeric[6] || '00'}`);
+  const named = text.match(/(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?[, ]+(?:(20\d{2})[, ]+)?(\d{1,2}):(\d{2})(?::(\d{2}))?/i);
+  if (!named) return null;
+  const month = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(named[2].slice(0, 3).toLowerCase());
+  return new Date(Number(named[3] || fallbackYear), month, Number(named[1]), Number(named[4]), Number(named[5]), Number(named[6] || 0));
+}
+
+function periodStart(period) {
+  if (period === 'all') return null;
+  const now = new Date();
+  if (period === 'day') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === 'week') { const day = (now.getDay() + 6) % 7; return new Date(now.getFullYear(), now.getMonth(), now.getDate() - day); }
+  if (period === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
+  return new Date(now.getFullYear(), 0, 1);
+}
+
+function filterTradesByPeriod(trades, period, anchorValue) {
+  const anchor = new Date(anchorValue);
+  let start;
+  let end;
+  if (period === 'day') { start = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate()); end = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + 1); }
+  else if (period === 'week') { const day = (anchor.getDay() + 6) % 7; start = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - day); end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7); }
+  else if (period === 'year') { start = new Date(anchor.getFullYear(), 0, 1); end = new Date(anchor.getFullYear() + 1, 0, 1); }
+  else { start = new Date(anchor.getFullYear(), anchor.getMonth(), 1); end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1); }
+  return trades.filter((trade) => { const date = new Date(trade.openedAt); return date >= start && date < end; });
+}
+
+function periodLabel(period, anchorValue) {
+  const rows = filterTradesByPeriod([{ openedAt: anchorValue }], period, anchorValue);
+  if (period === 'day') return formatDate(dateKey(anchorValue));
+  const date = new Date(anchorValue);
+  if (period === 'year') return String(date.getFullYear());
+  if (period === 'month') return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  return rows.length ? `Week of ${formatDate(dateKey(new Date(date.getFullYear(), date.getMonth(), date.getDate() - ((date.getDay() + 6) % 7))))}` : 'Selected week';
+}
+
+function classifyAsset(asset) {
+  const value = String(asset).replace(/\s*\(OTC\)/i, '').toUpperCase();
+  if (/BTC|ETH|LTC|XRP|BNB|SOL|BITCOIN|ETHEREUM|DOGE|CARDANO|RIPPLE|TONCOIN|POLKADOT|CHAINLINK/.test(value)) return 'crypto';
+  if (/XAU|XAG|OIL|BRENT|NATGAS/.test(value)) return 'commodity';
+  if (/^[A-Z]{3}\/[A-Z]{3}$/.test(value)) return 'currency';
+  return 'index';
+}
+
+function longestStreaks(trades) {
+  const ordered = [...trades].sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt));
+  let wins = 0; let losses = 0; let runType = 'NONE'; let run = 0;
+  ordered.forEach((trade) => {
+    const type = trade.profit > 0 ? 'WIN' : trade.profit < 0 ? 'LOSS' : 'DRAW';
+    if (type === runType) run += 1; else { runType = type; run = 1; }
+    if (type === 'WIN') wins = Math.max(wins, run);
+    if (type === 'LOSS') losses = Math.max(losses, run);
+  });
+  return { wins, losses, current: { type: runType, count: ordered.length ? run : 0 } };
+}
+
+function buildFundingCycles(transactions, trades) {
+  const events = transactions.filter(isSettledTransaction).sort((a, b) => new Date(a.occurredAt) - new Date(b.occurredAt));
+  const cycles = [];
+  let cycle = null;
+  events.forEach((event) => {
+    if (event.type === 'DEPOSIT') {
+      if (!cycle) cycle = { startedAt: event.occurredAt, endedAt: '', deposits: 0, withdrawals: 0, tradePnl: 0 };
+      cycle.deposits += event.amount;
+    } else if (cycle) {
+      cycle.withdrawals += event.amount;
+      cycle.endedAt = event.occurredAt;
+      cycle.tradePnl = sum(trades.filter((trade) => new Date(trade.openedAt) >= new Date(cycle.startedAt) && new Date(trade.openedAt) <= new Date(cycle.endedAt)), 'profit');
+      cycles.push(cycle);
+      cycle = null;
+    }
+  });
+  if (cycle) {
+    cycle.tradePnl = sum(trades.filter((trade) => new Date(trade.openedAt) >= new Date(cycle.startedAt)), 'profit');
+    cycles.push(cycle);
+  }
+  return cycles;
+}
+
+function isSettledTransaction(item) {
+  return !/reject|cancel|fail/i.test(item.status);
+}
+
+function durationHuman(start, end) {
+  const hours = Math.max(0, new Date(end) - new Date(start)) / 3600000;
+  if (hours < 48) return `${hours.toFixed(1)} hours`;
+  return `${(hours / 24).toFixed(1)} days`;
 }
 
 function parseTradeDate(value, zone = 'local') {
-  if (!value) return new Date();
+  if (!value) return new Date(NaN);
   if (value instanceof Date) return value;
+  if (typeof value === 'number' && value > 20000 && value < 100000) return new Date(Math.round((value - 25569) * 86400000));
   const text = String(value).trim();
-  if (!text) return new Date();
+  if (!text) return new Date(NaN);
+  const locale = text.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (locale) {
+    const iso = `${locale[3]}-${locale[2].padStart(2, '0')}-${locale[1].padStart(2, '0')}T${locale[4].padStart(2, '0')}:${locale[5]}:${locale[6] || '00'}`;
+    return new Date(zone === 'utc' ? `${iso}Z` : iso);
+  }
   const normalized = text.replace(' ', 'T');
   if (/([zZ]|[+-]\d{2}:?\d{2})$/.test(normalized)) return new Date(normalized);
   return new Date(zone === 'utc' ? `${normalized}Z` : normalized);
@@ -2011,11 +2365,13 @@ function formatDate(value) {
 }
 
 function shortDate(value) {
-  return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function timeOnly(value) {
-  return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 function durationBetween(start, end) {
@@ -2023,7 +2379,10 @@ function durationBetween(start, end) {
   const ms = new Date(end) - new Date(start);
   if (!Number.isFinite(ms) || ms <= 0) return '';
   const seconds = Math.round(ms / 1000);
-  return `00:${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function clean(value) {
@@ -2124,6 +2483,18 @@ function friendlyAuthError(error) {
 function csvCell(value) {
   const text = String(value ?? '');
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function exportTradesCsv(trades, filename = 'tcxjournal-trades.csv') {
+  const headers = ['market', 'account', 'sourceId', 'asset', 'direction', 'amount', 'income', 'payout', 'profit', 'result', 'open', 'close', 'openedAt', 'closedAt', 'duration', 'strategy', 'session', 'emotion', 'closeReason', 'commission', 'swap', 'notes'];
+  const rows = trades.map((trade) => headers.map((key) => csvCell(trade[key])).join(','));
+  downloadText([headers.join(','), ...rows].join('\n'), filename, 'text/csv;charset=utf-8');
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function downloadText(text, filename, type) {

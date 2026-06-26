@@ -723,6 +723,172 @@ main {
   .bottomNav button.active { background: #121b26; color: var(--text); }
 }
 
+/* Dense data workflow improvements */
+.recentTradeCard {
+  max-height: 430px;
+  overflow: hidden;
+}
+
+.recentTradeCard .table {
+  max-height: 350px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.trow.noSession {
+  min-width: 520px;
+  grid-template-columns: minmax(210px, 1.35fr) minmax(180px, 1fr) minmax(120px, .65fr) minmax(100px, auto);
+}
+
+.dropOverlay {
+  position: fixed;
+  inset: 16px;
+  z-index: 120;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  border: 2px dashed rgba(94, 234, 212, .72);
+  border-radius: 22px;
+  color: #ecfeff;
+  background: rgba(3, 15, 24, .9);
+  backdrop-filter: blur(22px);
+  pointer-events: none;
+}
+
+.dropOverlay b { font-size: 1.35rem; }
+.dropOverlay span { color: var(--muted); }
+
+.reviewLayout {
+  grid-template-columns: minmax(330px, 1fr) minmax(0, 1.25fr);
+  align-items: stretch;
+}
+
+.queueItem {
+  min-height: 72px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: center;
+}
+
+.queueItem span { grid-column: 1; }
+.queueItem strong { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+.reviewEditor { display: grid; align-content: space-between; gap: 12px; }
+.importActions { width: 100%; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 12px; }
+.reviewSecondary { display: flex; gap: 8px; }
+.importActions .primary { min-width: min(360px, 45%); }
+
+.toolbar,
+.pagination,
+.rangeBar,
+.analyticsControls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sortControl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 800;
+}
+
+.sortControl select,
+.analyticsControls select,
+.edgeSelect {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: #09111a;
+  padding: 0 10px;
+}
+
+.pagination {
+  justify-content: flex-end;
+  margin-top: 12px;
+  color: var(--muted);
+}
+
+.pagination span { margin-right: auto; }
+.pagination button:disabled { opacity: .42; cursor: not-allowed; }
+.pagination b { color: var(--text); }
+
+.calendarPage {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.calendarPage .rangeBar,
+.calendarPage .calendarCard,
+.calendarPage .calendarSide { grid-column: 1 / -1; }
+.calendarPage .calendarCard { width: 100%; }
+.calendarPage .day { min-height: 96px; }
+.calendarSide { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+.calendarSide .clearDay { grid-column: 1 / -1; }
+.calendarTrades .tableCard { width: 100%; }
+.calendarTrades .pagination { margin-bottom: 4px; }
+
+.rangeBar {
+  justify-content: space-between;
+  min-height: 58px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(8, 16, 25, .62);
+}
+.rangeBar > span { color: var(--muted); }
+
+.analyticsControls { padding: 12px; }
+.analyticsControls > div { display: grid; gap: 5px; min-width: 150px; }
+.analyticsControls b { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
+.analyticsControls > span { margin-left: auto; color: var(--muted); }
+.edgeSelect { width: 100%; }
+.fundingCard { grid-column: span 2; }
+.mutedCopy { margin: 4px 0 0; color: var(--muted); line-height: 1.5; }
+
+.transactionsPage { max-width: 1500px; }
+.transactionHero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .65fr); gap: 18px; align-items: center; }
+.transactionHero h2 { margin: 4px 0; }
+.transactionHero p { color: var(--muted); line-height: 1.5; }
+.transactionDrop { min-height: 140px; display: grid; place-content: center; justify-items: center; gap: 7px; border: 1px dashed rgba(94, 234, 212, .45); border-radius: var(--radius); background: rgba(15, 118, 110, .08); cursor: pointer; }
+.transactionDrop input { position: absolute; left: -9999px; }
+.transactionDrop span { color: var(--muted); font-size: .78rem; }
+.transactionStats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.transactionList { overflow: hidden; }
+.transactionRow { display: grid; grid-template-columns: 38px minmax(0, 1fr) 110px 130px; gap: 12px; align-items: center; padding: 13px 2px; border-top: 1px solid var(--line); }
+.transactionRow small { display: block; margin-top: 3px; color: var(--muted); }
+.transactionRow strong { text-align: right; }
+.transactionIcon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; font-weight: 900; }
+.transactionIcon.deposit { color: var(--green); background: rgba(53,212,154,.13); }
+.transactionIcon.withdrawal { color: var(--red); background: rgba(246,95,111,.13); }
+.transactionStatus { color: var(--muted); font-size: .78rem; }
+
+.storageMeter { height: 7px; margin: 10px 0; overflow: hidden; border-radius: 99px; background: #202b38; }
+.storageMeter i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #35d49a, #6aa9ff); }
+.archiveButton { margin-top: 12px; }
+
+@media (max-width: 1240px) {
+  .reviewLayout { grid-template-columns: 1fr; }
+  .calendarSide { grid-template-columns: 1fr; }
+  .fundingCard { grid-column: auto; }
+}
+
+@media (max-width: 820px) {
+  .transactionHero { grid-template-columns: 1fr; }
+  .transactionStats { grid-template-columns: repeat(2, 1fr); }
+  .transactionRow { grid-template-columns: 34px minmax(0, 1fr) auto; }
+  .transactionStatus { display: none; }
+  .importActions { align-items: stretch; flex-direction: column; }
+  .reviewSecondary { display: grid; grid-template-columns: 1fr 1fr; }
+  .importActions .primary { width: 100%; min-width: 0; }
+  .calendarPage .day { min-height: 70px; }
+}
+
 @media (max-width: 520px) {
   html { font-size: 14px; }
   .topbar { flex-wrap: wrap; }

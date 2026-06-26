@@ -56,12 +56,14 @@ export async function logout() {
 
 export async function loadCloudJournal(uid) {
   ensureCloud();
-  const [tradeSnapshot, settingsSnapshot] = await Promise.all([
+  const [tradeSnapshot, settingsSnapshot, transactionSnapshot] = await Promise.all([
     getDocs(collection(db, 'users', uid, 'trades')),
     getDoc(doc(db, 'users', uid, 'journal', 'settings')),
+    getDocs(collection(db, 'users', uid, 'transactions')),
   ]);
   return {
     trades: tradeSnapshot.docs.map((tradeDoc) => ({ id: tradeDoc.id, ...tradeDoc.data() })),
+    transactions: transactionSnapshot.docs.map((item) => ({ id: item.id, ...item.data() })),
     settings: settingsSnapshot.exists() ? settingsSnapshot.data().settings : null,
   };
 }
@@ -84,11 +86,17 @@ export async function initializeCloudJournal(user, journal) {
   }, { merge: true });
   await batch.commit();
   await writeTradeChunks(user.uid, journal.trades);
+  await writeTransactionChunks(user.uid, journal.transactions || []);
 }
 
 export async function saveCloudTrades(uid, trades) {
   ensureCloud();
   await writeTradeChunks(uid, trades);
+}
+
+export async function saveCloudTransactions(uid, transactions) {
+  ensureCloud();
+  await writeTransactionChunks(uid, transactions);
 }
 
 export async function deleteCloudTrade(uid, tradeId) {
@@ -98,11 +106,14 @@ export async function deleteCloudTrade(uid, tradeId) {
 
 export async function clearCloudJournal(uid) {
   ensureCloud();
-  const tradeSnapshot = await getDocs(collection(db, 'users', uid, 'trades'));
-  const tradeDocs = tradeSnapshot.docs;
-  for (let start = 0; start < tradeDocs.length; start += 450) {
+  const snapshots = await Promise.all([
+    getDocs(collection(db, 'users', uid, 'trades')),
+    getDocs(collection(db, 'users', uid, 'transactions')),
+  ]);
+  const documents = snapshots.flatMap((snapshot) => snapshot.docs);
+  for (let start = 0; start < documents.length; start += 450) {
     const batch = writeBatch(db);
-    tradeDocs.slice(start, start + 450).forEach((tradeDoc) => batch.delete(tradeDoc.ref));
+    documents.slice(start, start + 450).forEach((item) => batch.delete(item.ref));
     await batch.commit();
   }
   await deleteDoc(doc(db, 'users', uid, 'journal', 'settings'));
@@ -139,6 +150,28 @@ async function writeTradeChunks(uid, trades) {
     trades.slice(start, start + 450).forEach((trade) => {
       batch.set(doc(db, 'users', uid, 'trades', trade.id), {
         ...cleanObject(trade),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    });
+    await batch.commit();
+  }
+}
+
+export async function deleteCloudTrades(uid, ids) {
+  ensureCloud();
+  for (let start = 0; start < ids.length; start += 450) {
+    const batch = writeBatch(db);
+    ids.slice(start, start + 450).forEach((id) => batch.delete(doc(db, 'users', uid, 'trades', id)));
+    await batch.commit();
+  }
+}
+
+async function writeTransactionChunks(uid, transactions) {
+  for (let start = 0; start < transactions.length; start += 450) {
+    const batch = writeBatch(db);
+    transactions.slice(start, start + 450).forEach((item) => {
+      batch.set(doc(db, 'users', uid, 'transactions', item.id), {
+        ...cleanObject(item),
         updatedAt: serverTimestamp(),
       }, { merge: true });
     });
