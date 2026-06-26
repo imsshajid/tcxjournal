@@ -224,6 +224,17 @@ main {
   font-weight: 800;
 }
 
+.primary:disabled,
+.soft:disabled,
+.uploadBtn:disabled,
+.uploadTile:disabled,
+.segmented button:disabled,
+.queueItem:disabled,
+.panelSelect:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
 .primary {
   border-color: rgba(20, 184, 166, .42);
   color: var(--accent-text);
@@ -312,15 +323,27 @@ main {
   font-size: 1rem;
 }
 
-.panelTitle button {
+.panelTag,
+.panelSelect {
   min-height: 30px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #0b1118;
   color: var(--muted);
+}
+
+.panelTag {
+  padding: 0 9px;
+  font-weight: 700;
+  font-size: .86rem;
+}
+
+.panelSelect {
+  padding: 0 28px 0 9px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .legend {
@@ -603,6 +626,12 @@ main {
   flex: 0 0 auto;
 }
 
+.miniSpinner {
+  width: 17px;
+  height: 17px;
+  border-width: 2px;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -729,7 +758,7 @@ main {
   .hamb { display: inline-flex; align-items: center; justify-content: center; }
   .topbar { align-items: flex-start; }
   .actions { margin-left: auto; justify-content: flex-end; }
-  .actions .search, .actions .primary span { display: none; }
+  .actions .primary span { display: none; }
   .metrics { gap: 10px; }
   .card { padding: 12px; }
   .fields, .draft { grid-template-columns: 1fr; }
@@ -1670,6 +1699,16 @@ body {
 .importReview {
   display: grid;
   gap: 12px;
+}
+
+.importReview.saving {
+  pointer-events: none;
+  opacity: .72;
+}
+
+.saveProgress {
+  border-color: rgba(20, 184, 166, .42);
+  background: rgba(15, 118, 110, .16);
 }
 
 .reviewLayout {

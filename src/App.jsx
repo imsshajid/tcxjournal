@@ -20,7 +20,6 @@ import {
   LogOut,
   Menu,
   Plus,
-  Search,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
@@ -185,7 +184,7 @@ function makeTrade(input) {
     close: cleanNumber(input.close ?? input.closingPrice ?? input.closing_price),
     openedAt: toIso(input.openedAt || input.openingTime || input.opening_time_utc || input.open_time, 'local', ''),
     closedAt: toIso(input.closedAt || input.closingTime || input.closing_time_utc || input.close_time, 'local', ''),
-    duration: input.duration || input.timeframe || durationBetween(input.openedAt || input.openingTime, input.closedAt || input.closingTime),
+    duration: market === 'FTT' ? input.duration || input.timeframe || durationBetween(input.openedAt || input.openingTime, input.closedAt || input.closingTime) : '',
     strategy: normalizeStrategy(input.strategy),
     session: normalizeSession(input.session, input.openedAt || input.openingTime || input.opening_time_utc || input.open_time),
     emotion: input.emotion || 'Neutral',
@@ -452,14 +451,22 @@ function App() {
   };
 
   const importTransactions = (items) => {
-    const existing = new Set(data.transactions.map(transactionKey));
-    const fresh = mergeTransactions(items).filter((item) => !existing.has(transactionKey(item)));
-    const accepted = fresh.slice(0, Math.max(0, MAX_TRANSACTIONS - data.transactions.length));
-    if (accepted.length) {
-      setData((current) => ({ ...current, transactions: mergeTransactions(accepted, current.transactions) }));
+    const normalized = mergeTransactions(items);
+    const incomingFingerprints = new Set(normalized.map((item) => item.fingerprint).filter(Boolean));
+    const replacedIds = data.transactions.filter((item) => incomingFingerprints.has(item.fingerprint)).map((item) => item.id);
+    const retained = data.transactions.filter((item) => !incomingFingerprints.has(item.fingerprint));
+    const existing = new Set(retained.map(transactionKey));
+    const fresh = normalized.filter((item) => !existing.has(transactionKey(item)));
+    const accepted = fresh.slice(0, Math.max(0, MAX_TRANSACTIONS - retained.length));
+    if (accepted.length || replacedIds.length) {
+      setData((current) => ({
+        ...current,
+        transactions: mergeTransactions(accepted, current.transactions.filter((item) => !incomingFingerprints.has(item.fingerprint))),
+      }));
+      if (replacedIds.length) syncCloud((uid, cloud) => cloud.deleteCloudTransactions?.(uid, replacedIds));
       syncCloud((uid, cloud) => cloud.saveCloudTransactions(uid, accepted));
     }
-    return { added: accepted.length, skipped: items.length - fresh.length, limited: fresh.length - accepted.length };
+    return { added: accepted.length, skipped: normalized.length - fresh.length, limited: fresh.length - accepted.length };
   };
 
   const saveTrade = (trade) => importTrades([trade]);
@@ -669,7 +676,6 @@ function Topbar({ page, market, setMarket, settings, setPage, openNav, authState
             <button key={m} className={market === m ? 'on' : ''} onClick={() => setMarket(m)}>{m}</button>
           ))}
         </div>
-        <button className="soft search"><Search size={17} /><span>Search</span></button>
         <button className="primary" onClick={() => setPage('New Trade')}><Plus size={17} /><span>New</span></button>
         <button className={authState.user ? 'accountButton signedIn' : 'accountButton'} onClick={openAccount} aria-label="Account and cloud sync">
           {authState.user?.photoURL
@@ -988,7 +994,7 @@ function TradeList({ title = 'Trade History', trades, compact = false, hideSessi
           <small>{shortDate(trade.openedAt)} - {timeOnly(trade.openedAt)} - {trade.market} {trade.direction}</small>
         </div>
         <span className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i></span>
-        {!hideSession && <span>{trade.session}<small>{multiple ? `Closes ${timeOnly(trade.closedAt)}` : trade.duration || 'Timed trade'}</small></span>}
+        {!hideSession && <span>{trade.session}<small>{multiple ? `Closes ${timeOnly(trade.closedAt)}` : trade.market === 'FTT' ? trade.duration || 'Timed trade' : trade.closeReason || 'CFD trade'}</small></span>}
         <span className={trade.profit >= 0 ? 'green' : 'red'}>
           {money(trade.profit)}
           {multiple
@@ -1115,6 +1121,7 @@ function NewTrade({ onSave, onImport, settings, onOpenTrade }) {
 function Importer({ onImport, settings, onReviewChange }) {
   const [mode, setMode] = useState(settings.ocrMode || 'AUTO');
   const [busy, setBusy] = useState(false);
+  const [savingImport, setSavingImport] = useState(false);
   const [status, setStatus] = useState('');
   const [drafts, setDrafts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(IMPORT_LATER_KEY)) || []; } catch { return []; }
@@ -1194,20 +1201,30 @@ function Importer({ onImport, settings, onReviewChange }) {
     if (key === 'result') next.income = '';
     return makeTrade(next);
   }));
-  const saveDrafts = () => {
-    const result = onImport(drafts);
-    setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.${result.limited ? ` ${result.limited} over the storage limit.` : ''}`);
-    setDrafts([]);
-    setActiveIndex(0);
-    localStorage.removeItem(IMPORT_LATER_KEY);
+  const saveDrafts = async () => {
+    if (savingImport || !drafts.length) return;
+    setSavingImport(true);
+    setStatus(`Saving ${drafts.length.toLocaleString()} reviewed trade${drafts.length === 1 ? '' : 's'}...`);
+    await waitForPaint();
+    try {
+      const result = onImport(drafts);
+      setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.${result.limited ? ` ${result.limited} over the storage limit.` : ''}`);
+      setDrafts([]);
+      setActiveIndex(0);
+      localStorage.removeItem(IMPORT_LATER_KEY);
+    } finally {
+      setSavingImport(false);
+    }
   };
   const skipAll = () => {
+    if (savingImport) return;
     setDrafts([]);
     setActiveIndex(0);
     localStorage.removeItem(IMPORT_LATER_KEY);
     setStatus('Import skipped.');
   };
   const logLater = () => {
+    if (savingImport) return;
     localStorage.setItem(IMPORT_LATER_KEY, JSON.stringify(drafts));
     setStatus(`${drafts.length} trade(s) saved for later review.`);
   };
@@ -1219,17 +1236,17 @@ function Importer({ onImport, settings, onReviewChange }) {
       {dragging && <div className="dropOverlay"><UploadCloud size={42} /><b>Drop files anywhere</b><span>Images, CSV, XLS, or XLSX</span></div>}
       <div className="importControls">
         <div className="segmented inline">
-          {['AUTO', 'FTT', 'CFD'].map((name) => <button key={name} className={mode === name ? 'on' : ''} onClick={() => setMode(name)}>{name}</button>)}
+          {['AUTO', 'FTT', 'CFD'].map((name) => <button key={name} className={mode === name ? 'on' : ''} onClick={() => setMode(name)} disabled={busy || savingImport}>{name}</button>)}
         </div>
         <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,image/png,image/jpeg,image/webp" multiple onChange={(e) => handleFiles(e.target.files)} />
-        <button className="uploadBtn" onClick={() => fileRef.current?.click()} disabled={busy}>
+        <button className="uploadBtn" onClick={() => fileRef.current?.click()} disabled={busy || savingImport}>
           <UploadCloud size={20} />
           {busy ? 'Processing' : 'Upload history'}
         </button>
       </div>
       <div className="uploadGrid">
-        <button className="uploadTile" onClick={() => fileRef.current?.click()} disabled={busy}><FileSpreadsheet size={24} /><span>CSV / Excel</span></button>
-        <button className="uploadTile" onClick={() => fileRef.current?.click()} disabled={busy}><ImageUp size={24} /><span>Screenshot</span></button>
+        <button className="uploadTile" onClick={() => fileRef.current?.click()} disabled={busy || savingImport}><FileSpreadsheet size={24} /><span>CSV / Excel</span></button>
+        <button className="uploadTile" onClick={() => fileRef.current?.click()} disabled={busy || savingImport}><ImageUp size={24} /><span>Screenshot</span></button>
       </div>
       {busy && (
         <div className="processingCard" role="status" aria-live="polite">
@@ -1237,14 +1254,23 @@ function Importer({ onImport, settings, onReviewChange }) {
           <div><b>Processing upload</b><span>{status || 'Reading files...'}</span></div>
         </div>
       )}
-      {status && !busy && <p className="status">{status}</p>}
+      {savingImport && (
+        <div className="processingCard saveProgress" role="status" aria-live="polite">
+          <span className="spinner" />
+          <div><b>Saving reviewed trades</b><span>{status}</span></div>
+        </div>
+      )}
+      {status && !busy && !savingImport && <p className="status">{status}</p>}
       {!!drafts.length && (
-        <div className="importReview">
-          <PanelTitle title="Review Import" tag={`${activeIndex + 1} of ${drafts.length}`} />
+        <div className={savingImport ? 'importReview saving' : 'importReview'}>
+          <PanelTitle
+            title="Review Import"
+            tag={<ReviewJumpSelect activeIndex={activeIndex} count={drafts.length} onChange={setActiveIndex} disabled={savingImport} />}
+          />
           <div className="reviewLayout">
             <div className="reviewQueue">
               {drafts.slice(0, 120).map((trade, index) => (
-                <button key={trade.id} className={index === activeIndex ? 'queueItem active' : 'queueItem'} onClick={() => setActiveIndex(index)}>
+                <button key={trade.id} className={index === activeIndex ? 'queueItem active' : 'queueItem'} onClick={() => setActiveIndex(index)} disabled={savingImport}>
                   <b>{trade.asset}</b>
                   <span>{trade.strategy} - {trade.emotion}</span>
                   <strong className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</strong>
@@ -1255,14 +1281,14 @@ function Importer({ onImport, settings, onReviewChange }) {
             <div className="reviewEditor">
               {activeDraft && <TradeFormFields draft={activeDraft} set={updateActive} />}
               <div className="reviewNav">
-                <button className="soft" onClick={() => setActiveIndex((i) => Math.max(0, i - 1))}>Previous</button>
-                <button className="soft" onClick={() => setActiveIndex((i) => Math.min(drafts.length - 1, i + 1))}>Next</button>
+                <button className="soft" onClick={() => setActiveIndex((i) => Math.max(0, i - 1))} disabled={savingImport}>Previous</button>
+                <button className="soft" onClick={() => setActiveIndex((i) => Math.min(drafts.length - 1, i + 1))} disabled={savingImport}>Next</button>
               </div>
             </div>
           </div>
           <div className="modalActions importActions">
-            <div className="reviewSecondary"><button className="soft dangerText" onClick={skipAll}><X size={16} />Skip all</button><button className="soft" onClick={logLater}><StickyNote size={16} />Log later</button></div>
-            <button className="primary" onClick={saveDrafts}><Check size={18} />Save all reviewed trades</button>
+            <div className="reviewSecondary"><button className="soft dangerText" onClick={skipAll} disabled={savingImport}><X size={16} />Skip all</button><button className="soft" onClick={logLater} disabled={savingImport}><StickyNote size={16} />Log later</button></div>
+            <button className="primary" onClick={saveDrafts} disabled={savingImport}>{savingImport ? <span className="spinner miniSpinner" /> : <Check size={18} />}{savingImport ? 'Saving trades...' : 'Save all reviewed trades'}</button>
           </div>
         </div>
       )}
@@ -1393,7 +1419,6 @@ function TransactionsPage({ transactions, trades, onImport, settings }) {
       const detected = [];
       for (const file of files) {
         const fingerprint = await hashFile(file);
-        if (transactions.some((item) => item.fingerprint === fingerprint)) continue;
         const text = await readImageText(file, settings.ocrMode || 'AUTO', setStatus);
         detected.push(...parseTransactionText(text, fingerprint));
       }
@@ -1509,7 +1534,35 @@ function AccountModal({ authState, onClose, onSignIn, onSignOut, onStartFresh })
 }
 
 function PanelTitle({ title, tag, action }) {
-  return <div className="panelTitle"><h3>{title}</h3><div className="panelActions">{action}{tag && <button>{tag}<ChevronDown size={14} /></button>}</div></div>;
+  const tagNode = React.isValidElement(tag) ? tag : tag ? <span className="panelTag">{tag}</span> : null;
+  return <div className="panelTitle"><h3>{title}</h3><div className="panelActions">{action}{tagNode}</div></div>;
+}
+
+function ReviewJumpSelect({ activeIndex, count, onChange, disabled = false }) {
+  const value = Math.min(activeIndex, Math.max(0, count - 1));
+  return (
+    <select
+      className="panelSelect"
+      value={value}
+      disabled={disabled}
+      aria-label="Jump to detected trade"
+      onChange={(event) => onChange(Number(event.target.value))}
+    >
+      {Array.from({ length: count }, (_, index) => (
+        <option key={index} value={index}>{index + 1} of {count}</option>
+      ))}
+    </select>
+  );
+}
+
+function waitForPaint() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') {
+      setTimeout(resolve, 0);
+      return;
+    }
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
 }
 
 function Input({ label, value, onChange, type = 'text' }) {
@@ -1657,7 +1710,7 @@ function TradeGroupEditorModal({ group, onClose, onSave }) {
         <OptionalSelect label="Strategy" value={draft.strategy} onChange={(value) => set('strategy', value)} options={STRATEGIES} />
         <OptionalSelect label="Emotion" value={draft.emotion} onChange={(value) => set('emotion', value)} options={EMOTIONS} />
         <OptionalSelect label="Session" value={draft.session} onChange={(value) => set('session', value)} options={SESSION_OPTIONS} />
-        <OptionalSelect label="Timeframe" value={draft.duration} onChange={(value) => set('duration', value)} options={TIMEFRAMES.includes(draft.duration) || !draft.duration ? TIMEFRAMES : [draft.duration, ...TIMEFRAMES]} />
+        {group.summary.market === 'FTT' && <OptionalSelect label="Timeframe" value={draft.duration} onChange={(value) => set('duration', value)} options={TIMEFRAMES.includes(draft.duration) || !draft.duration ? TIMEFRAMES : [draft.duration, ...TIMEFRAMES]} />}
       </div>
       <label className="area"><span>Notes</span><textarea value={draft.notes || ''} onChange={(event) => set('notes', event.target.value)} /></label>
       <div className="modalActions">
@@ -1683,7 +1736,7 @@ function TradeDetailModal({ trade, onClose, onEdit, onDelete }) {
           <span className={['UP', 'BUY'].includes(trade.direction) ? 'green' : 'red'}>{trade.direction}</span>
           <b className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</b>
         </div>
-        <div className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i><i>{trade.duration || 'Timed trade'}</i></div>
+        <div className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i>{trade.market === 'FTT' && <i>{trade.duration || 'Timed trade'}</i>}</div>
       </div>
       <div className="detailGrid">
         <Info label="Open time" value={`${shortDate(trade.openedAt)} ${timeOnly(trade.openedAt)}`} />
@@ -1780,7 +1833,7 @@ function TradeFormFields({ draft, set }) {
         <Input label="Entry price" value={draft.open} onChange={(v) => set('open', v)} />
         <Input label="Exit price" value={draft.close} onChange={(v) => set('close', v)} />
         <Select label="Strategy" value={draft.strategy} onChange={(v) => set('strategy', v)} options={STRATEGIES} />
-        <Select label="Timeframe" value={draft.duration || '1m'} onChange={(v) => set('duration', v)} options={TIMEFRAMES.includes(draft.duration) || !draft.duration ? TIMEFRAMES : [draft.duration, ...TIMEFRAMES]} />
+        {isFtt && <Select label="Timeframe" value={draft.duration || '1m'} onChange={(v) => set('duration', v)} options={TIMEFRAMES.includes(draft.duration) || !draft.duration ? TIMEFRAMES : [draft.duration, ...TIMEFRAMES]} />}
         <Select label="Session" value={normalizeSession(draft.session, draft.openedAt)} onChange={(v) => set('session', v)} options={SESSION_OPTIONS} />
         <Select label="Emotion" value={draft.emotion || 'Neutral'} onChange={(v) => set('emotion', v)} options={EMOTIONS} />
       </div>
@@ -1936,6 +1989,8 @@ function parseTradeText(text, forced = 'AUTO') {
   const ticket = /\b\d{8,12}\b/;
 
   if (forced !== 'CFD') {
+    const detailTrade = parseFttDetailText(cleanText, uuid);
+    if (detailTrade) trades.push(detailTrade);
     const fttBlocks = buildFttBlocks(lines, uuid);
     fttBlocks.forEach((block) => {
       const trade = parseFttTextBlock(block, uuid);
@@ -1944,34 +1999,10 @@ function parseTradeText(text, forced = 'AUTO') {
   }
 
   if (forced !== 'FTT') {
-    for (let i = 0; i < lines.length; i += 1) {
-      const block = lines.slice(i, i + 7).join(' ');
-      const asset = block.match(/XAU\/USD|XAG\/USD|[A-Z]{3}\/[A-Z]{3}|BTCUSD|ETHUSD|NAS100|US30/i);
-      const side = block.match(/\b(Buy|Sell)\b/i);
-      const lot = block.match(/\b(?:Buy|Sell)\s+(\d+(?:\.\d+)?)\s*lot/i);
-      const id = block.match(ticket);
-      const pl = block.match(/([+-]\s*\d+(?:\.\d+)?)\s*(?:USD|\$)/i);
-      const prices = block.match(/\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\b/g) || [];
-      if (asset && (side || id) && pl) {
-        trades.push(makeTrade({
-          market: 'CFD',
-          sourceId: id?.[0],
-          account: 'CFD',
-          asset: asset[0],
-          direction: side?.[1] || 'SELL',
-          amount: lot?.[1] || 0,
-          open: prices[0],
-          close: prices[1],
-          openedAt: parseVisibleDate(block) || new Date().toISOString(),
-          closedAt: parseVisibleDate(block) || new Date().toISOString(),
-          profit: pl[1],
-          closeReason: /stop\s*out/i.test(block) ? 'Stop out' : /stop\s*loss/i.test(block) ? 'Stop loss' : '',
-          strategy: 'Unclassified',
-          notes: 'Imported from screenshot.',
-        }));
-        i += 4;
-      }
-    }
+    buildCfdBlocks(lines, ticket).forEach((block) => {
+      const trade = parseCfdTextBlock(block, ticket);
+      if (trade) trades.push(trade);
+    });
   }
 
   const seen = new Set();
@@ -2006,6 +2037,7 @@ function findFttBlockStart(lines, idLine, lowerBound) {
 }
 
 function parseFttTextBlock(block, uuid) {
+  if (/\b(Buy|Sell)\b|\blot\b|Open price|Close price|P\/L|Commission|Equity|Closed by|Stop\s*out/i.test(block)) return null;
   const asset = block.match(/[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?|XAU\s*\/?\s*USD(?:\s*\(OTC\))?|XAG\s*\/?\s*USD(?:\s*\(OTC\))?/i);
   const id = block.match(uuid);
   const pct = block.match(/(\d{2,3})\s*%/);
@@ -2031,6 +2063,59 @@ function parseFttTextBlock(block, uuid) {
     strategy: 'Unclassified',
     notes: 'Imported from screenshot.',
   });
+}
+
+function parseFttDetailText(text, uuid) {
+  const compact = String(text || '').replace(/\r/g, '\n').replace(/\s+/g, ' ').trim();
+  if (!/Trade\s+Pair|Open\s+Price|Close\s+Price|Difference/i.test(compact)) return null;
+  if (/\b(Buy|Sell)\b|\blot\b|P\/L|Commission|Equity|Closed by|Stop\s*out/i.test(compact)) return null;
+  const asset = labeledFttText(compact, 'Trade Pair') || compact.match(/\b[A-Z][A-Za-z]+(?:\s+Coin)?\s*\(OTC\)|[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?/i)?.[0] || 'FTT trade';
+  const values = extractMoneyValues(compact);
+  const open = labeledFttNumber(compact, 'Open Price');
+  const close = labeledFttNumber(compact, 'Close Price');
+  const dates = parseVisibleDates(compact);
+  const resultAmount = values.length ? values.at(-1) : 0;
+  const amount = values.length > 1 ? values[0] : Math.abs(resultAmount);
+  const id = compact.match(uuid)?.[0] || compact.match(/\bID:?\s*([0-9a-f-]{8,})/i)?.[1] || '';
+  const duration = compact.match(/Duration:?\s*(\d{1,2}:\d{2}:\d{2}|\d+\s*[smh])/i)?.[1] || '';
+  const pct = compact.match(/([+-]?\d{1,3})\s*%/)?.[1];
+  return makeTrade({
+    market: 'FTT',
+    sourceId: id,
+    account: 'Quotex',
+    asset: normalizeFttDetailAsset(asset),
+    direction: inferFttDirection(compact, open, close, resultAmount - amount),
+    amount,
+    income: resultAmount,
+    payout: pct ? Math.abs(toNumber(pct)) : '',
+    open,
+    close,
+    openedAt: labeledFttDate(compact, 'Open time') || dates[0] || new Date().toISOString(),
+    closedAt: labeledFttDate(compact, 'Close Time') || labeledFttDate(compact, 'Close time') || dates[1] || dates[0] || new Date().toISOString(),
+    duration,
+    strategy: 'Unclassified',
+    notes: 'Imported from Quotex detail screenshot.',
+  });
+}
+
+function labeledFttText(text, label) {
+  const match = text.match(new RegExp(`${escapeRegExp(label)}:?\\s*([A-Za-z0-9/() .-]+?)(?=\\s+(?:[-+]?\\d{1,3}\\s*%|Open\\s+Price|Close\\s+Price|Open\\s+time|Close\\s+Time|Duration|Difference|ID:)|$)`, 'i'));
+  return match ? clean(match[1]) : '';
+}
+
+function labeledFttNumber(text, label) {
+  const match = text.match(new RegExp(`${escapeRegExp(label)}:?\\s*([+-]?\\d+(?:\\.\\d+)?)`, 'i'));
+  return match ? match[1] : '';
+}
+
+function labeledFttDate(text, label) {
+  const match = text.match(new RegExp(`${escapeRegExp(label)}:?\\s*(\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)`, 'i'));
+  return match ? parseVisibleDate(match[1]) : '';
+}
+
+function normalizeFttDetailAsset(value) {
+  const text = clean(value).replace(/\s+-?\s*\d{1,3}\s*%.*$/i, '');
+  return normalizeAsset(text);
 }
 
 function extractMoneyValues(block) {
@@ -2059,9 +2144,13 @@ function extractDecimalNumbers(text, minDecimals, maxDecimals) {
 
 function parseVisibleDates(text) {
   const iso = [...String(text || '').matchAll(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?/g)].map((match) => toIso(match[0]));
-  const eu = [...String(text || '').matchAll(/(\d{2})\/(\d{2})\/(\d{4}),?\s*(\d{2}):(\d{2})(?::(\d{2}))?/g)]
-    .map((match) => `${match[3]}-${match[2]}-${match[1]}T${match[4]}:${match[5]}:${match[6] || '00'}`);
-  return [...iso, ...eu];
+  const eu = [...String(text || '').matchAll(/(\d{1,2})[/.](\d{1,2})[/.](\d{4}),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AP]M))?/gi)]
+    .map((match) => formatVisibleDateParts(match));
+  const named = [...String(text || '').matchAll(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)\b/gi)]
+    .map((match) => formatNamedDateParts(match));
+  const dayNamed = [...String(text || '').matchAll(/\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AP]M))?\b/gi)]
+    .map((match) => formatDayNamedDateParts(match));
+  return [...iso, ...eu, ...named, ...dayNamed];
 }
 
 function inferFttDirection(block, open, close, profit) {
@@ -2072,6 +2161,125 @@ function inferFttDirection(block, open, close, profit) {
   if (openValue && closeValue && profit < 0) return closeValue >= openValue ? 'DOWN' : 'UP';
   if (openValue && closeValue) return closeValue >= openValue ? 'UP' : 'DOWN';
   return 'UP';
+}
+
+function buildCfdBlocks(lines, ticket) {
+  const ticketLines = lines.reduce((acc, line, index) => (ticket.test(line) ? [...acc, index] : acc), []);
+  if (ticketLines.length) {
+    return ticketLines.map((start, index) => lines.slice(Math.max(0, start - 2), ticketLines[index + 1] ?? Math.min(lines.length, start + 18)).join(' '));
+  }
+  const assetLine = /XAU\s*\/?\s*USD|XAG\s*\/?\s*USD|[A-Z]{3}\s*\/?\s*[A-Z]{3}|BTC\s*\/?\s*USD|ETH\s*\/?\s*USD|NAS100|US30/i;
+  const starts = lines.reduce((acc, line, index) => (assetLine.test(line) ? [...acc, index] : acc), []);
+  return starts.map((start, index) => lines.slice(start, starts[index + 1] ?? Math.min(lines.length, start + 18)).join(' '));
+}
+
+function parseCfdTextBlock(block, ticket) {
+  const compact = String(block || '').replace(/\s+/g, ' ').trim();
+  const tableRow = parseCfdTableRow(compact, ticket);
+  if (tableRow) return tableRow;
+  const asset = compact.match(/XAU\s*\/?\s*USD|XAG\s*\/?\s*USD|[A-Z]{3}\s*\/?\s*[A-Z]{3}|BTC\s*\/?\s*USD|ETH\s*\/?\s*USD|NAS100|US30/i);
+  const side = compact.match(/\b(Buy|Sell)\b/i);
+  const id = compact.match(ticket);
+  const lot = compact.match(/\b(?:Buy|Sell)\s+([+-]?\d+(?:[.,]\d+)?)\s*lot\b/i)
+    || compact.match(/\bLot(?:\s+size)?\s*:?\s*([+-]?\d+(?:[.,]\d+)?)/i);
+  const headerOpen = compact.match(/\b(?:Buy|Sell)\s+[+-]?\d+(?:[.,]\d+)?\s*lot\s+at\s+([+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i);
+  const openPrice = labeledCfdNumber(compact, ['Open price', 'Entry price']) || headerOpen?.[1] || '';
+  const closePrice = labeledCfdNumber(compact, ['Close price', 'Exit price']) || '';
+  const profit = labeledCfdMoney(compact, ['P/L', 'Profit']) || compact.match(/([+-]\s*\d+(?:[.,]\d+)?)\s*(?:USD|\$)/i)?.[1] || '';
+  if (!asset || (!side && !id) || profit === '') return null;
+  const dates = parseVisibleDates(compact);
+  return makeTrade({
+    market: 'CFD',
+    sourceId: id?.[0],
+    account: 'CFD',
+    asset: slashSymbol(asset[0].replace(/\s*\/\s*/, '/')),
+    direction: side?.[1] || 'SELL',
+    amount: lot?.[1] || '',
+    open: openPrice,
+    close: closePrice,
+    openedAt: labeledCfdDate(compact, 'Open time') || dates[0] || new Date().toISOString(),
+    closedAt: labeledCfdDate(compact, 'Close time') || dates[1] || dates[0] || new Date().toISOString(),
+    profit,
+    closeReason: /stop\s*out/i.test(compact) ? 'Stop out' : /stop\s*loss/i.test(compact) ? 'Stop loss' : '',
+    commission: labeledCfdMoney(compact, ['Commission']),
+    swap: labeledCfdMoney(compact, ['Swap']),
+    equity: labeledCfdMoney(compact, ['Equity']),
+    strategy: 'Unclassified',
+    notes: 'Imported from screenshot.',
+  });
+}
+
+function parseCfdTableRow(block, ticket) {
+  if (/Open price|Close price|P\/L|Commission|Equity/i.test(block)) return null;
+  const asset = block.match(/XAU\s*\/?\s*USD|XAG\s*\/?\s*USD|[A-Z]{3}\s*\/?\s*[A-Z]{3}|BTC\s*\/?\s*USD|ETH\s*\/?\s*USD|NAS100|US30/i);
+  const side = block.match(/\b(Buy|Sell)\b/i);
+  const id = block.match(ticket);
+  if (!asset || !side) return null;
+  const valueText = id
+    ? block.slice(side.index + side[0].length, id.index)
+    : stripVisibleDates(block.slice(side.index + side[0].length));
+  const rowNumbers = extractRowNumbers(valueText);
+  if (rowNumbers.length < 3) return null;
+  const signed = [...block.matchAll(/[+-]\s*\d+(?:[.,]\d+)?/g)].map((match) => match[0]);
+  const dates = parseVisibleDates(block);
+  return makeTrade({
+    market: 'CFD',
+    sourceId: id?.[0] || '',
+    account: 'CFD',
+    asset: slashSymbol(asset[0].replace(/\s*\/\s*/, '/')),
+    direction: side[1],
+    amount: rowNumbers[0],
+    open: rowNumbers[1],
+    close: rowNumbers[2],
+    openedAt: dates[0] || new Date().toISOString(),
+    closedAt: dates[1] || dates[0] || new Date().toISOString(),
+    profit: signed.at(-1) || rowNumbers[3] || '',
+    closeReason: /stop\s*out/i.test(block) ? 'Stop out' : /stop\s*loss/i.test(block) ? 'Stop loss' : '',
+    commission: id && signed.length > 1 ? signed.at(-2) : '',
+    strategy: 'Unclassified',
+    notes: 'Imported from CFD row screenshot.',
+  });
+}
+
+function stripVisibleDates(text) {
+  return String(text || '')
+    .replace(/\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\b/g, ' ')
+    .replace(/\b\d{1,2}[/.]\d{1,2}[/.]\d{4},?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?\b/gi, ' ')
+    .replace(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M\b/gi, ' ')
+    .replace(/\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*,?\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?\b/gi, ' ');
+}
+
+function extractRowNumbers(text) {
+  return [...String(text || '').matchAll(/[+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|[+-]?\d+(?:\.\d+)?/g)]
+    .map((match) => match[0])
+    .filter((value) => value !== '-' && value !== '');
+}
+
+function labeledCfdNumber(text, labels) {
+  for (const label of labels) {
+    const escaped = escapeRegExp(label).replace('\\/', '\\s*\\/\\s*');
+    const match = text.match(new RegExp(`${escaped}\\s*:?[\\s\\S]*?([+-]?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?)`, 'i'));
+    if (match) return match[1];
+  }
+  return '';
+}
+
+function labeledCfdMoney(text, labels) {
+  for (const label of labels) {
+    const escaped = escapeRegExp(label).replace('\\/', '\\s*\\/\\s*');
+    const match = text.match(new RegExp(`${escaped}\\s*:?[\\s\\S]*?([+-]?\\s*\\d+(?:[.,]\\d+)?)\\s*(?:USD|\\$)?`, 'i'));
+    if (match) return match[1];
+  }
+  return '';
+}
+
+function labeledCfdDate(text, label) {
+  const match = text.match(new RegExp(`${escapeRegExp(label)}\\s*:?[\\s\\S]*?((?:\\d{1,2}[/.-]){2}\\d{4}\\s+\\d{1,2}:\\d{2}(?::\\d{2})?(?:\\s*[AP]M)?)`, 'i'));
+  return match ? parseVisibleDate(match[1]) : '';
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function normalizeStrategy(value) {
@@ -2336,9 +2544,43 @@ function groupByDay(trades) {
 function parseVisibleDate(text) {
   const iso = text.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?/);
   if (iso) return toIso(iso[0]);
-  const eu = text.match(/(\d{2})\/(\d{2})\/(\d{4}),?\s*(\d{2}):(\d{2})(?::(\d{2}))?/);
-  if (eu) return `${eu[3]}-${eu[2]}-${eu[1]}T${eu[4]}:${eu[5]}:${eu[6] || '00'}`;
+  const eu = text.match(/(\d{1,2})[/.](\d{1,2})[/.](\d{4}),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AP]M))?/i);
+  if (eu) return formatVisibleDateParts(eu);
+  const named = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)\b/i);
+  if (named) return formatNamedDateParts(named);
+  const dayNamed = text.match(/\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AP]M))?\b/i);
+  if (dayNamed) return formatDayNamedDateParts(dayNamed);
   return '';
+}
+
+function formatVisibleDateParts(match) {
+  let hour = Number(match[4]);
+  const meridiem = (match[7] || '').toUpperCase();
+  if (meridiem === 'PM' && hour < 12) hour += 12;
+  if (meridiem === 'AM' && hour === 12) hour = 0;
+  return `${match[3]}-${String(match[2]).padStart(2, '0')}-${String(match[1]).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${match[5]}:${match[6] || '00'}`;
+}
+
+function formatNamedDateParts(match) {
+  const months = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
+  let hour = Number(match[3]);
+  const meridiem = (match[6] || '').toUpperCase();
+  if (meridiem === 'PM' && hour < 12) hour += 12;
+  if (meridiem === 'AM' && hour === 12) hour = 0;
+  const year = new Date().getFullYear();
+  const month = months[String(match[1]).slice(0, 4).toLowerCase()] || months[String(match[1]).slice(0, 3).toLowerCase()] || 1;
+  return `${year}-${String(month).padStart(2, '0')}-${String(match[2]).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${match[4]}:${match[5] || '00'}`;
+}
+
+function formatDayNamedDateParts(match) {
+  const months = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
+  let hour = Number(match[3]);
+  const meridiem = (match[6] || '').toUpperCase();
+  if (meridiem === 'PM' && hour < 12) hour += 12;
+  if (meridiem === 'AM' && hour === 12) hour = 0;
+  const year = new Date().getFullYear();
+  const month = months[String(match[2]).slice(0, 4).toLowerCase()] || months[String(match[2]).slice(0, 3).toLowerCase()] || 1;
+  return `${year}-${String(month).padStart(2, '0')}-${String(match[1]).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${match[4]}:${match[5] || '00'}`;
 }
 
 function toIso(value, zone = 'local', fallback = new Date().toISOString()) {
@@ -2365,6 +2607,8 @@ function parseTransactionText(text, fingerprint = '') {
     .trim();
   const provider = /exness/i.test(source) ? 'Exness' : /quotex/i.test(source) ? 'Quotex' : 'Imported';
   const year = source.match(/\b20\d{2}\b/)?.[0] || String(new Date().getFullYear());
+  const tableRows = parseTransactionTableRows(source, fingerprint, provider);
+  if (tableRows.length) return mergeTransactions(tableRows);
   const markers = [...source.matchAll(/\b(Deposit|Withdrawal|Payout)\b/gi)];
   const results = [];
   markers.forEach((marker, index) => {
@@ -2393,6 +2637,27 @@ function parseTransactionText(text, fingerprint = '') {
     }));
   });
   return mergeTransactions(results);
+}
+
+function parseTransactionTableRows(source, fingerprint, fallbackProvider) {
+  const rows = [];
+  const rowPattern = /\b(\d{7,15})\s+(\d{1,2}[/.\-]\d{1,2}[/.\-]20\d{2},?\s+\d{1,2}:\d{2}:\d{2})\s+(Succeeded|Successful|Done|Sent|Rejected|Cancelled)\s+(Deposit|Payout|Withdrawal)\s+([A-Za-z][A-Za-z0-9 ._-]*?)\s+([+-]\s*(?:[$S])?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})|(?:[$S])\s*[+-]?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2}))/gi;
+  for (const match of source.matchAll(rowPattern)) {
+    const [, sourceId, dateText, status, type, paymentSystem, amountText] = match;
+    const date = parseTransactionDate(dateText, new Date().getFullYear());
+    if (!date) continue;
+    rows.push(makeTransaction({
+      id: `${fingerprint.slice(0, 18)}-row-${rows.length}-${sourceId}`,
+      sourceId,
+      provider: clean(paymentSystem) || fallbackProvider,
+      type,
+      amount: amountText,
+      occurredAt: date,
+      status,
+      fingerprint,
+    }));
+  }
+  return rows;
 }
 
 function parseTransactionDate(text, fallbackYear) {
@@ -2492,9 +2757,13 @@ function parseTradeDate(value, zone = 'local') {
   if (typeof value === 'number' && value > 20000 && value < 100000) return new Date(Math.round((value - 25569) * 86400000));
   const text = String(value).trim();
   if (!text) return new Date(NaN);
-  const locale = text.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  const locale = text.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AP]M))?$/i);
   if (locale) {
-    const iso = `${locale[3]}-${locale[2].padStart(2, '0')}-${locale[1].padStart(2, '0')}T${locale[4].padStart(2, '0')}:${locale[5]}:${locale[6] || '00'}`;
+    let hour = Number(locale[4]);
+    const meridiem = (locale[7] || '').toUpperCase();
+    if (meridiem === 'PM' && hour < 12) hour += 12;
+    if (meridiem === 'AM' && hour === 12) hour = 0;
+    const iso = `${locale[3]}-${locale[2].padStart(2, '0')}-${locale[1].padStart(2, '0')}T${String(hour).padStart(2, '0')}:${locale[5]}:${locale[6] || '00'}`;
     return new Date(zone === 'utc' ? `${iso}Z` : iso);
   }
   const normalized = text.replace(' ', 'T');

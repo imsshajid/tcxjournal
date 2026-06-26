@@ -99,6 +99,15 @@ export async function saveCloudTransactions(uid, transactions) {
   await writeTransactionChunks(uid, transactions);
 }
 
+export async function deleteCloudTransactions(uid, transactionIds) {
+  ensureCloud();
+  for (let start = 0; start < transactionIds.length; start += 450) {
+    const batch = writeBatch(db);
+    transactionIds.slice(start, start + 450).forEach((id) => batch.delete(doc(db, 'users', uid, 'transactions', id)));
+    await batch.commit();
+  }
+}
+
 export async function deleteCloudTrade(uid, tradeId) {
   ensureCloud();
   await deleteDoc(doc(db, 'users', uid, 'trades', tradeId));
