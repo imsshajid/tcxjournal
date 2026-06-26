@@ -247,14 +247,22 @@ function mergeTrades(primary, secondary = []) {
 }
 
 function makeTransaction(input) {
-  const type = /with|payout/i.test(input.type) ? 'WITHDRAWAL' : 'DEPOSIT';
+  const amountText = String(input.amount ?? '').trim();
+  const signedAmount = toNumber(input.amount);
+  const type = amountText.startsWith('-')
+    ? 'WITHDRAWAL'
+    : amountText.startsWith('+')
+      ? 'DEPOSIT'
+      : /with|payout/i.test(input.type)
+        ? 'WITHDRAWAL'
+        : 'DEPOSIT';
   return {
     id: input.id || input.sourceId || crypto.randomUUID(),
     sourceId: clean(input.sourceId || input.invoice || ''),
     provider: input.provider || 'Imported',
     account: input.account || '',
     type,
-    amount: Math.abs(toNumber(input.amount)),
+    amount: Math.abs(signedAmount),
     currency: input.currency || 'USD',
     occurredAt: toIso(input.occurredAt || input.date, input.zone || 'local', ''),
     status: title(input.status || 'Succeeded'),
@@ -1950,9 +1958,11 @@ function mapCfdRow(row) {
 }
 
 async function readImageText(file, mode, setStatus) {
+  const browserText = await readBrowserImageText(file, setStatus);
+  if (browserText.trim() || mode !== 'AUTO') return browserText;
   if (mode === 'AUTO') {
     try {
-      setStatus('Reading screenshot with enhanced OCR...');
+      setStatus('Browser OCR returned no text. Trying cloud OCR...');
       const cloud = await callCloudOcr(file);
       if (cloud) {
         setStatus('Screenshot text extracted. Detecting trades...');
@@ -1962,56 +1972,73 @@ async function readImageText(file, mode, setStatus) {
       setStatus('Cloud OCR unavailable. Running browser OCR...');
     }
   }
-  return readBrowserImageText(file, setStatus);
+  return browserText;
 }
 
 async function readBrowserImageText(file, setStatus) {
   setStatus('Running browser OCR...');
-  const ocrFile = await prepareImageForOcr(file);
-  const result = await recognize(ocrFile, 'eng', {
-    logger: (m) => {
-      if (m.status && m.progress) setStatus(`${m.status} ${Math.round(m.progress * 100)}%`);
-    },
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
-    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core.wasm.js',
-    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-  });
-  return result.data.text;
+  const variants = await prepareImageVariantsForOcr(file);
+  const texts = [];
+  for (const [index, variant] of variants.entries()) {
+    const label = variants.length > 1 ? ` pass ${index + 1}/${variants.length}` : '';
+    const result = await recognize(variant, 'eng', {
+      logger: (m) => {
+        if (m.status && m.progress) setStatus(`${m.status}${label} ${Math.round(m.progress * 100)}%`);
+      },
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core.wasm.js',
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+      tessedit_pageseg_mode: '6',
+    });
+    if (result.data.text?.trim()) texts.push(result.data.text);
+  }
+  return texts.join('\n');
 }
 
-async function prepareImageForOcr(file) {
-  if (!file.type?.startsWith('image/') || typeof createImageBitmap !== 'function') return file;
+async function prepareImageVariantsForOcr(file) {
+  if (!file.type?.startsWith('image/') || typeof createImageBitmap !== 'function') return [file];
   try {
     const bitmap = await createImageBitmap(file);
     const shortImage = bitmap.height < 180;
-    if (!shortImage) return file;
-    const scale = Math.min(8, Math.max(3, Math.ceil(320 / bitmap.height)));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(bitmap.width * scale);
-    canvas.height = Math.round(bitmap.height * scale);
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return file;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    let total = 0;
-    for (let i = 0; i < image.data.length; i += 4) total += (image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3;
-    const dark = total / (image.data.length / 4) < 120;
-    for (let i = 0; i < image.data.length; i += 4) {
-      let gray = (image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3;
-      if (dark) gray = 255 - gray;
-      gray = gray < 145 ? 0 : 255;
-      image.data[i] = gray;
-      image.data[i + 1] = gray;
-      image.data[i + 2] = gray;
-    }
-    ctx.putImageData(image, 0, 0);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-    return blob || file;
+    const wideTable = bitmap.width > 1200;
+    const scale = shortImage ? Math.min(8, Math.max(3, Math.ceil(320 / bitmap.height))) : wideTable ? 2 : 3;
+    const normalized = await renderOcrVariant(bitmap, scale, 'normalize');
+    const threshold = await renderOcrVariant(bitmap, scale, 'threshold');
+    return [normalized, file, threshold].filter(Boolean);
   } catch {
-    return file;
+    return [file];
   }
+}
+
+async function renderOcrVariant(bitmap, scale, mode) {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let min = 255;
+  let max = 0;
+  const grayValues = new Uint8Array(image.data.length / 4);
+  for (let i = 0, pixel = 0; i < image.data.length; i += 4, pixel += 1) {
+    const gray = Math.round(image.data[i] * 0.299 + image.data[i + 1] * 0.587 + image.data[i + 2] * 0.114);
+    grayValues[pixel] = gray;
+    min = Math.min(min, gray);
+    max = Math.max(max, gray);
+  }
+  const range = Math.max(1, max - min);
+  for (let i = 0, pixel = 0; i < image.data.length; i += 4, pixel += 1) {
+    let gray = Math.round((grayValues[pixel] - min) / range * 255);
+    if (mode === 'threshold') gray = gray < 145 ? 0 : 255;
+    image.data[i] = gray;
+    image.data[i + 1] = gray;
+    image.data[i + 2] = gray;
+  }
+  ctx.putImageData(image, 0, 0);
+  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), 'image/png'));
 }
 
 async function callCloudOcr(file) {
@@ -2051,12 +2078,29 @@ function parseTradeText(text, forced = 'AUTO') {
   }
 
   const seen = new Set();
+  const seenFallback = new Set();
   return trades.filter((trade) => {
     const key = uniqueKey(trade);
-    if (seen.has(key)) return false;
+    const fallbackKey = tradeFallbackKey(trade);
+    if (seen.has(key) || seenFallback.has(fallbackKey)) return false;
     seen.add(key);
+    seenFallback.add(fallbackKey);
     return true;
   });
+}
+
+function tradeFallbackKey(trade) {
+  return [
+    trade.market,
+    normalizeOcrAsset(trade.asset),
+    dateKey(trade.openedAt),
+    timeOnly(trade.openedAt),
+    timeOnly(trade.closedAt),
+    round(trade.amount),
+    round(trade.income || trade.profit),
+    round(trade.open),
+    round(trade.close),
+  ].join('|').toLowerCase();
 }
 
 function buildFttBlocks(lines, uuid) {
@@ -2074,10 +2118,14 @@ function buildFttBlocks(lines, uuid) {
 }
 
 function findFttBlockStart(lines, idLine, lowerBound) {
-  const assetOrPayout = /[A-Z0-9]{3}\s*\/\s*[A-Z0-9]{2,3}(?:\s*\(OTC\))?|(^|[^\d.])\d{2,3}\s*%/i;
+  const asset = /[A-Z0-9]{3}\s*\/\s*[A-Z0-9]{2,3}(?:\s*\(OTC\))?/i;
+  const validPayout = /(^|[^\d.])(?:[5-9]\d|100)\s*%/;
+  let assetCandidate = -1;
   for (let i = idLine; i >= lowerBound; i -= 1) {
-    if (assetOrPayout.test(lines[i])) return i;
+    if (asset.test(lines[i]) && assetCandidate === -1) assetCandidate = i;
+    if (validPayout.test(lines[i])) return asset.test(lines[i]) ? i : Math.max(lowerBound, i - 3);
   }
+  if (assetCandidate !== -1) return assetCandidate;
   return Math.max(lowerBound, idLine - 2);
 }
 
@@ -2207,7 +2255,7 @@ function parseOcrMoneyToken(token, symbol = '') {
   let text = String(token || '').replace(/\s+/g, '').replace(',', '.');
   if (!text) return NaN;
   const decimal = text.match(/^([+-]?\d+)\.(\d{3})$/);
-  if (!symbol && decimal && /[58]$/.test(decimal[2])) text = `${decimal[1]}.${decimal[2].slice(0, 2)}`;
+  if (decimal) text = `${decimal[1]}.${decimal[2].slice(0, 2)}`;
   const number = Number(text);
   return Number.isFinite(number) ? number : NaN;
 }
@@ -2220,15 +2268,49 @@ function inferFttIncomeFromBlock(block, amount) {
 function extractFttQuotes(block) {
   const open = block.match(/Opening\s+quote:?\s*(\d{1,6}(?:\.\d{1,6})?)\s+(\d{2}\/\d{2}\/\d{4},?\s*\d{2}:\d{2}(?::\d{2})?)/i);
   const close = block.match(/Closing\s+quote:?\s*(\d{1,6}(?:\.\d{1,6})?)\s+(\d{2}\/\d{2}\/\d{4},?\s*\d{2}:\d{2}(?::\d{2})?)/i);
-  const datedQuotes = [...String(block || '').matchAll(/(\d{1,6}(?:\.\d{1,6})?)\s+(\d{1,2}\/\d{1,2}\/\d{4},?\s*\d{1,2}:\d{2}(?::\d{2})?)/g)];
+  const datedQuotes = [...String(block || '').matchAll(/(\d{1,6}\.\d{1,6})\s+(\d{1,2}\/\d{1,2}\/\d{4},?\s*\d{1,2}:\d{2}(?::\d{2})?)/g)];
   const prices = extractDecimalNumbers(block, 3, 6);
+  const pricePair = selectFttQuotePair(prices);
   const dates = parseVisibleDates(block);
+  const fallbackDates = selectFttDatePair(dates);
+  const useDatedQuotes = datedQuotes.length >= 2;
   return {
-    open: open?.[1] || datedQuotes[0]?.[1] || prices[0] || '',
-    close: close?.[1] || datedQuotes[1]?.[1] || prices[1] || '',
-    openedAt: open?.[2] ? parseVisibleDate(open[2]) : datedQuotes[0]?.[2] ? parseVisibleDate(datedQuotes[0][2]) : dates[0] || '',
-    closedAt: close?.[2] ? parseVisibleDate(close[2]) : datedQuotes[1]?.[2] ? parseVisibleDate(datedQuotes[1][2]) : dates[1] || '',
+    open: open?.[1] || (useDatedQuotes ? datedQuotes[0]?.[1] : pricePair.open) || datedQuotes[0]?.[1] || '',
+    close: close?.[1] || (useDatedQuotes ? datedQuotes[1]?.[1] : pricePair.close) || datedQuotes[1]?.[1] || '',
+    openedAt: open?.[2] ? parseVisibleDate(open[2]) : useDatedQuotes ? parseVisibleDate(datedQuotes[0][2]) : fallbackDates.open || '',
+    closedAt: close?.[2] ? parseVisibleDate(close[2]) : useDatedQuotes ? parseVisibleDate(datedQuotes[1][2]) : fallbackDates.close || '',
   };
+}
+
+function selectFttQuotePair(prices) {
+  if (!prices.length) return { open: '', close: '' };
+  if (prices.length === 1) return { open: prices[0], close: '' };
+  let best = null;
+  for (let index = 0; index < prices.length - 1; index += 1) {
+    const open = prices[index];
+    const close = prices[index + 1];
+    const diff = Math.abs(close - open);
+    if (diff > 20) continue;
+    const score = diff + index * 0.01;
+    if (!best || score < best.score) best = { open, close, score };
+  }
+  return best || { open: prices[0], close: prices[1] || '' };
+}
+
+function selectFttDatePair(dates) {
+  const parsed = dates.map((value, index) => ({ value, index, date: new Date(value) })).filter((item) => !Number.isNaN(item.date.getTime()));
+  let best = null;
+  for (const opened of parsed) {
+    for (const closed of parsed) {
+      if (opened.value === closed.value) continue;
+      const duration = closed.date - opened.date;
+      if (duration <= 0 || duration > 15 * 60 * 1000) continue;
+      if (opened.date.toISOString().slice(0, 10) !== closed.date.toISOString().slice(0, 10)) continue;
+      const score = Math.abs(duration - 60 * 1000) + Math.abs(closed.index - opened.index) * 500 + (closed.index < opened.index ? 250 : 0);
+      if (!best || score < best.score) best = { open: opened.value, close: closed.value, score };
+    }
+  }
+  return best || { open: dates[0] || '', close: dates[1] || dates[0] || '' };
 }
 
 function extractDecimalNumbers(text, minDecimals, maxDecimals) {
@@ -2323,9 +2405,10 @@ function parseCfdTableRow(block, ticket) {
   const valueText = id
     ? block.slice(side.index + side[0].length, id.index)
     : stripVisibleDates(block.slice(side.index + side[0].length));
-  const rowNumbers = extractRowNumbers(valueText);
+  const rowNumbers = extractRowNumbers(stripVisibleDates(valueText));
   if (rowNumbers.length < 3) return null;
   const signed = [...block.matchAll(/[+-]\s*\d+(?:[.,]\d+)?/g)].map((match) => match[0]);
+  const closeReasonProfit = block.match(/(?:stop\s*out|stop\s*loss|take\s*profit)\s+([+-]\s*\d+(?:[.,]\d+)?)/i)?.[1];
   const dates = parseVisibleDates(block);
   return makeTrade({
     market: 'CFD',
@@ -2338,7 +2421,7 @@ function parseCfdTableRow(block, ticket) {
     close: rowNumbers[2],
     openedAt: dates[0] || new Date().toISOString(),
     closedAt: dates[1] || dates[0] || new Date().toISOString(),
-    profit: signed.at(-1) || rowNumbers[3] || '',
+    profit: closeReasonProfit || signed.at(-1) || rowNumbers[3] || '',
     closeReason: /stop\s*out/i.test(block) ? 'Stop out' : /stop\s*loss/i.test(block) ? 'Stop loss' : '',
     commission: id && signed.length > 1 ? signed.at(-2) : '',
     strategy: 'Unclassified',
@@ -2737,7 +2820,7 @@ function parseTransactionText(text, fingerprint = '') {
       type,
       amount: amount[2] || amount[3],
       occurredAt: date,
-      status: block.match(/Succeeded|Successful|Done|Sent|Rejected|Cancelled/i)?.[0] || 'Succeeded',
+      status: block.match(/S+uccess(?:ed|ful)|Succeeded|Done|Sent|Rejected|Cancelled/i)?.[0] || 'Succeeded',
       fingerprint,
     }));
   });
@@ -2746,7 +2829,7 @@ function parseTransactionText(text, fingerprint = '') {
 
 function parseTransactionTableRows(source, fingerprint, fallbackProvider) {
   const rows = [];
-  const rowPattern = /\b(\d{7,15})\s+(\d{1,2}[/.\-]\d{1,2}[/.\-]20\d{2},?\s+\d{1,2}:\d{2}:\d{2})\s+(Succeeded|Successful|Done|Sent|Rejected|Cancelled)\s+(Deposit|Payout|Withdrawal)\s+([A-Za-z][A-Za-z0-9 ._-]*?)\s+([+-]\s*(?:[$S])?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})|(?:[$S])\s*[+-]?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2}))/gi;
+  const rowPattern = /\b(\d{7,15})\s+(\d{1,2}[/.\-]\d{1,2}[/.\-]20\d{2},?\s+\d{1,2}:\d{2}:\d{2})\s+(?:[@®●✓\[\]0-9\s]+)?(S+uccess(?:ed|ful)|Succeeded|Done|Sent|Rejected|Cancelled)\s+(Deposit|Payout|Withdrawal)\s+([A-Za-z][A-Za-z0-9 ._-]*?)\s+([+-]\s*(?:[$S])?\s*\d{1,3}(?:[,.]\d{3})*(?:\.\d{2})|(?:[$S])\s*[+-]?\s*\d{1,3}(?:[,.]\d{3})*(?:\.\d{2}))/gi;
   for (const match of source.matchAll(rowPattern)) {
     const [, sourceId, dateText, status, type, paymentSystem, amountText] = match;
     const date = parseTransactionDate(dateText, new Date().getFullYear());
@@ -2756,13 +2839,39 @@ function parseTransactionTableRows(source, fingerprint, fallbackProvider) {
       sourceId,
       provider: clean(paymentSystem) || fallbackProvider,
       type,
-      amount: amountText,
+      amount: parseTransactionAmountText(amountText),
       occurredAt: date,
-      status,
+      status: normalizeTransactionStatus(status),
       fingerprint,
     }));
   }
-  return rows;
+  return dedupeTransactionRows(rows);
+}
+
+function parseTransactionAmountText(value) {
+  return String(value || '')
+    .replace(/[S]/gi, '$')
+    .replace(/(?<=\d)\.(?=\d{3}\.)/g, ',')
+    .replace(/(?<=\d),(?=\d{2}$)/g, '.');
+}
+
+function normalizeTransactionStatus(value) {
+  return /reject|cancel/i.test(value) ? value : 'Succeeded';
+}
+
+function dedupeTransactionRows(rows) {
+  const byExact = new Map();
+  rows.forEach((row) => {
+    const key = [row.type, row.amount, secondKey(row.occurredAt)].join('|');
+    const current = byExact.get(key);
+    if (!current || transactionIdScore(row.sourceId) > transactionIdScore(current.sourceId)) byExact.set(key, row);
+  });
+  return [...byExact.values()];
+}
+
+function transactionIdScore(value) {
+  const text = clean(value);
+  return text.length + (/^0/.test(text) ? -4 : 0);
 }
 
 function parseTransactionDate(text, fallbackYear) {
