@@ -282,6 +282,7 @@ function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [activeTrade, setActiveTrade] = useState(null);
   const [editingTrade, setEditingTrade] = useState(null);
+  const [bulkEditGroup, setBulkEditGroup] = useState(null);
   const [dayPopup, setDayPopup] = useState('');
   const [accountOpen, setAccountOpen] = useState(false);
   const [authState, setAuthState] = useState({
@@ -476,6 +477,19 @@ function App() {
     setEditingTrade(null);
     setActiveTrade(normalized);
   };
+  const updateTradeGroup = (ids, patch) => {
+    const idSet = new Set(ids);
+    const updated = dataRef.current.trades
+      .filter((item) => idSet.has(item.id))
+      .map((item) => makeTrade({ ...item, ...patch }));
+    const updatedById = new Map(updated.map((trade) => [trade.id, trade]));
+    setData((current) => ({
+      ...current,
+      trades: current.trades.map((item) => updatedById.get(item.id) || item),
+    }));
+    if (updated.length) syncCloud((uid, cloud) => cloud.saveCloudTrades(uid, updated));
+    setBulkEditGroup(null);
+  };
   const removeTrade = (id) => {
     deleteTrade(id);
     setActiveTrade(null);
@@ -527,10 +541,11 @@ function App() {
             clearDate={() => setSelectedDate('')}
             onOpenTrade={setActiveTrade}
             onEditTrade={setEditingTrade}
+            onEditGroup={setBulkEditGroup}
           />
         )}
         {page === 'New Trade' && <NewTrade onSave={saveTrade} onImport={importTrades} settings={data.settings} onOpenTrade={setActiveTrade} />}
-        {page === 'History' && <History trades={trades} deleteTrade={removeTrade} onOpenTrade={setActiveTrade} onEditTrade={setEditingTrade} />}
+        {page === 'History' && <History trades={trades} deleteTrade={removeTrade} onOpenTrade={setActiveTrade} onEditTrade={setEditingTrade} onEditGroup={setBulkEditGroup} />}
         {page === 'Analytics' && <Analytics trades={trades} transactions={data.transactions} />}
         {page === 'Transactions' && <TransactionsPage transactions={data.transactions} trades={data.trades} onImport={importTransactions} settings={data.settings} />}
         {page === 'Calendar' && (
@@ -542,6 +557,7 @@ function App() {
             clearDate={() => setSelectedDate('')}
             onOpenTrade={setActiveTrade}
             onEditTrade={setEditingTrade}
+            onEditGroup={setBulkEditGroup}
           />
         )}
         {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} authState={authState} openAccount={() => setAccountOpen(true)} trades={data.trades} transactions={data.transactions} onArchive={archiveOldTrades} />}
@@ -575,6 +591,13 @@ function App() {
           onDelete={() => removeTrade(editingTrade.id)}
         />
       )}
+      {bulkEditGroup && (
+        <TradeGroupEditorModal
+          group={bulkEditGroup}
+          onClose={() => setBulkEditGroup(null)}
+          onSave={updateTradeGroup}
+        />
+      )}
       {dayPopup && (
         <DayTradesModal
           date={dayPopup}
@@ -584,6 +607,7 @@ function App() {
             setDayPopup('');
             setActiveTrade(trade);
           }}
+          onEditGroup={setBulkEditGroup}
         />
       )}
     </div>
@@ -679,7 +703,7 @@ function BottomNav({ page, setPage }) {
   );
 }
 
-function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade }) {
+function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade, onEditGroup }) {
   const scopedTrades = selectedDate ? selectedTrades : trades;
   const shownTrades = selectedDate ? selectedTrades : trades.slice(0, 8);
   return (
@@ -697,6 +721,7 @@ function Dashboard({ trades, selectedDate, selectedTrades, onDatePick, clearDate
           className="recentTradeCard"
           onOpenTrade={onOpenTrade}
           onEditTrade={onEditTrade}
+          onEditGroup={onEditGroup}
         />
         <StrategyPanel trades={scopedTrades} />
       </div>
@@ -817,7 +842,7 @@ function OutcomePanel({ trades }) {
   );
 }
 
-function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade }) {
+function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearDate, onOpenTrade, onEditTrade, onEditGroup }) {
   const [range, setRange] = useState('month');
   const [pageIndex, setPageIndex] = useState(0);
   const pageSize = useResponsivePageSize();
@@ -833,7 +858,7 @@ function CalendarPage({ trades, selectedDate, selectedTrades, onDatePick, clearD
       <CalendarPanel trades={trades} selectedDate={selectedDate} onDatePick={(key) => { setRange('day'); setPageIndex(0); onDatePick(key); }} full />
       <div className="calendarSide">
         <CalendarInsightPanel trades={sideTrades} selectedDate={selectedDate} />
-        <div className="calendarTrades"><TradeList title="Recent Trades" trades={listTrades} empty="No trades in this range." onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} /><Pagination page={safePage} pages={pages} total={sorted.length} pageSize={pageSize} onChange={setPageIndex} /></div>
+        <div className="calendarTrades"><TradeList title="Recent Trades" trades={listTrades} empty="No trades in this range." onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} onEditGroup={onEditGroup} /><Pagination page={safePage} pages={pages} total={sorted.length} pageSize={pageSize} onChange={setPageIndex} /></div>
         {selectedDate && <button className="soft clearDay" onClick={clearDate}>Show recent trades</button>}
       </div>
     </section>
@@ -933,7 +958,7 @@ function StrategyPanel({ trades }) {
   );
 }
 
-function TradeList({ title = 'Trade History', trades, compact = false, hideSession = false, className = '', deleteTrade, empty = 'No trades yet.', onOpenTrade, onEditTrade, actionSlot }) {
+function TradeList({ title = 'Trade History', trades, compact = false, hideSession = false, className = '', deleteTrade, empty = 'No trades yet.', onOpenTrade, onEditTrade, onEditGroup, actionSlot }) {
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
   const groups = useMemo(() => groupTradesForJournal(trades), [trades]);
   const collapsedCount = groups.filter((group) => group.trades.length > 1).length;
@@ -973,7 +998,10 @@ function TradeList({ title = 'Trade History', trades, compact = false, hideSessi
         {!compact && (
           <span className="rowActions" onClick={(event) => event.stopPropagation()}>
             {multiple ? (
-              <button className={`iconBtn groupToggle ${expanded ? 'open' : ''}`} title={expanded ? 'Collapse entries' : 'Show entries'} onClick={() => toggleGroup(group.id)}><ChevronDown size={16} /></button>
+              <>
+                <button className="iconBtn" title="Edit merged row" onClick={() => onEditGroup?.(group)}><Edit3 size={15} /></button>
+                <button className={`iconBtn groupToggle ${expanded ? 'open' : ''}`} title={expanded ? 'Collapse entries' : 'Show entries'} onClick={() => toggleGroup(group.id)}><ChevronDown size={16} /></button>
+              </>
             ) : (
               <>
                 <button className="iconBtn" title="View trade" onClick={() => onOpenTrade?.(trade)}><Eye size={15} /></button>
@@ -1123,14 +1151,19 @@ function Importer({ onImport, settings, onReviewChange }) {
     const files = [...(fileList || [])];
     if (!files.length) return;
     setBusy(true);
-    setStatus('Reading files...');
+    setStatus(`Preparing ${files.length} file${files.length === 1 ? '' : 's'}...`);
     try {
       const allDrafts = [];
-      for (const file of files) {
+      for (const [index, file] of files.entries()) {
+        const fileLabel = `File ${index + 1} of ${files.length}: ${file.name}`;
+        setStatus(`${fileLabel} - reading...`);
         if (isSheet(file)) {
+          setStatus(`${fileLabel} - reading spreadsheet...`);
           allDrafts.push(...await parseSheetFile(file));
         } else if (file.type.startsWith('image/')) {
-          const text = await readImageText(file, mode, setStatus);
+          setStatus(`${fileLabel} - reading screenshot...`);
+          const text = await readImageText(file, mode, (message) => setStatus(`${fileLabel} - ${message}`));
+          setStatus(`${fileLabel} - detecting trades...`);
           const parsed = parseTradeText(text, mode);
           if (!parsed.length) throw new Error('not-trade-image');
           allDrafts.push(...parsed);
@@ -1198,7 +1231,13 @@ function Importer({ onImport, settings, onReviewChange }) {
         <button className="uploadTile" onClick={() => fileRef.current?.click()} disabled={busy}><FileSpreadsheet size={24} /><span>CSV / Excel</span></button>
         <button className="uploadTile" onClick={() => fileRef.current?.click()} disabled={busy}><ImageUp size={24} /><span>Screenshot</span></button>
       </div>
-      {status && <p className="status">{status}</p>}
+      {busy && (
+        <div className="processingCard" role="status" aria-live="polite">
+          <span className="spinner" />
+          <div><b>Processing upload</b><span>{status || 'Reading files...'}</span></div>
+        </div>
+      )}
+      {status && !busy && <p className="status">{status}</p>}
       {!!drafts.length && (
         <div className="importReview">
           <PanelTitle title="Review Import" tag={`${activeIndex + 1} of ${drafts.length}`} />
@@ -1231,7 +1270,7 @@ function Importer({ onImport, settings, onReviewChange }) {
   );
 }
 
-function History({ trades, deleteTrade, onOpenTrade, onEditTrade }) {
+function History({ trades, deleteTrade, onOpenTrade, onEditTrade, onEditGroup }) {
   const [sort, setSort] = useState('newest');
   const [pageIndex, setPageIndex] = useState(0);
   const pageSize = useResponsivePageSize();
@@ -1256,7 +1295,7 @@ function History({ trades, deleteTrade, onOpenTrade, onEditTrade }) {
         <label className="sortControl"><span>Sort</span><select value={sort} onChange={(event) => { setSort(event.target.value); setPageIndex(0); }}><option value="newest">Latest first</option><option value="oldest">Oldest first</option><option value="profit">Highest profit</option><option value="loss">Largest loss</option><option value="asset">Asset A-Z</option></select></label>
         <button className="soft" onClick={exportCsv}><Download size={17} />Export CSV</button>
       </div>
-      <TradeList trades={visible} deleteTrade={deleteTrade} onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} />
+      <TradeList trades={visible} deleteTrade={deleteTrade} onOpenTrade={onOpenTrade} onEditTrade={onEditTrade} onEditGroup={onEditGroup} />
       <Pagination page={safePage} pages={pageCount} total={sorted.length} pageSize={pageSize} onChange={setPageIndex} />
     </section>
   );
@@ -1481,6 +1520,18 @@ function Select({ label, value, onChange, options }) {
   return <label className="field"><span>{label}</span><select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select></label>;
 }
 
+function OptionalSelect({ label, value, onChange, options }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value || ''} onChange={(event) => onChange(event.target.value)}>
+        <option value="">Keep current</option>
+        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function AssetSelect({ value, onChange, market }) {
   const options = assetOptionsForMarket(market);
   const normalizedValue = normalizeAsset(value);
@@ -1580,6 +1631,43 @@ function TradeEditorModal({ trade, onClose, onSave, onDelete }) {
   );
 }
 
+function TradeGroupEditorModal({ group, onClose, onSave }) {
+  const [draft, setDraft] = useState({
+    strategy: commonTradeValue(group.trades, 'strategy', ''),
+    emotion: commonTradeValue(group.trades, 'emotion', ''),
+    session: commonTradeValue(group.trades, 'session', ''),
+    duration: commonTradeValue(group.trades, 'duration', ''),
+    notes: commonTradeValue(group.trades, 'notes', ''),
+  });
+  const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
+  const save = () => {
+    const patch = Object.fromEntries(Object.entries(draft).filter(([, value]) => value !== ''));
+    onSave(group.trades.map((trade) => trade.id), patch);
+  };
+  return (
+    <Modal onClose={onClose} className="tradeModal groupEditModal">
+      <div className="modalHead">
+        <div>
+          <span className="miniCaps">{group.trades.length} merged entries</span>
+          <h2>{group.summary.asset}</h2>
+        </div>
+        <button className="iconBtn" onClick={onClose}><X size={16} /></button>
+      </div>
+      <div className="fields">
+        <OptionalSelect label="Strategy" value={draft.strategy} onChange={(value) => set('strategy', value)} options={STRATEGIES} />
+        <OptionalSelect label="Emotion" value={draft.emotion} onChange={(value) => set('emotion', value)} options={EMOTIONS} />
+        <OptionalSelect label="Session" value={draft.session} onChange={(value) => set('session', value)} options={SESSION_OPTIONS} />
+        <OptionalSelect label="Timeframe" value={draft.duration} onChange={(value) => set('duration', value)} options={TIMEFRAMES.includes(draft.duration) || !draft.duration ? TIMEFRAMES : [draft.duration, ...TIMEFRAMES]} />
+      </div>
+      <label className="area"><span>Notes</span><textarea value={draft.notes || ''} onChange={(event) => set('notes', event.target.value)} /></label>
+      <div className="modalActions">
+        <button className="soft" onClick={onClose}>Cancel</button>
+        <button className="primary" onClick={save}><Check size={17} />Apply to row</button>
+      </div>
+    </Modal>
+  );
+}
+
 function TradeDetailModal({ trade, onClose, onEdit, onDelete }) {
   return (
     <Modal onClose={onClose} className="tradeModal detailModal">
@@ -1615,7 +1703,7 @@ function TradeDetailModal({ trade, onClose, onEdit, onDelete }) {
   );
 }
 
-function DayTradesModal({ date, trades, onClose, onOpenTrade }) {
+function DayTradesModal({ date, trades, onClose, onOpenTrade, onEditGroup }) {
   const [expandedGroup, setExpandedGroup] = useState('');
   const groups = useMemo(() => groupTradesForJournal(trades), [trades]);
   return (
@@ -1639,6 +1727,7 @@ function DayTradesModal({ date, trades, onClose, onOpenTrade }) {
               <b>{group.summary.asset}{group.trades.length > 1 && <small>{group.trades.length} entries</small>}</b>
               <span>{group.summary.strategy} - {group.summary.emotion}</span>
               <strong className={group.summary.profit >= 0 ? 'green' : 'red'}>{money(group.summary.profit)}</strong>
+              {group.trades.length > 1 && <i className="miniEdit" onClick={(event) => { event.stopPropagation(); onEditGroup?.(group); }}><Edit3 size={13} /></i>}
             </button>
             {group.trades.length > 1 && expandedGroup === group.id && (
               <div className="miniGroupEntries">
@@ -1805,12 +1894,17 @@ function mapCfdRow(row) {
 async function readImageText(file, mode, setStatus) {
   if (mode === 'AUTO') {
     try {
+      setStatus('Reading screenshot with enhanced OCR...');
       const cloud = await callCloudOcr(file);
-      if (cloud) return cloud;
+      if (cloud) {
+        setStatus('Screenshot text extracted. Detecting trades...');
+        return cloud;
+      }
     } catch {
       setStatus('Cloud OCR unavailable. Running browser OCR...');
     }
   }
+  setStatus('Running browser OCR...');
   const result = await recognize(file, 'eng', {
     logger: (m) => {
       if (m.status && m.progress) setStatus(`${m.status} ${Math.round(m.progress * 100)}%`);
@@ -1842,35 +1936,11 @@ function parseTradeText(text, forced = 'AUTO') {
   const ticket = /\b\d{8,12}\b/;
 
   if (forced !== 'CFD') {
-    for (let i = 0; i < lines.length; i += 1) {
-      const block = lines.slice(i, i + 8).join(' ');
-      const asset = block.match(/[A-Z]{3}\/[A-Z]{3}(?:\s*\(OTC\))?|[A-Z]{3,5}\/?[A-Z]{3}/);
-      const id = block.match(uuid);
-      const pct = block.match(/(\d{2,3})\s*%/);
-      const values = [...block.matchAll(/([+-]?\s*\d+(?:[.,]\d+)?)\s*\$/g)].map((m) => toNumber(m[1]));
-      const prices = block.match(/\b\d{1,6}(?:\.\d{2,6})\b/g) || [];
-      if ((asset || id) && values.length) {
-        const amount = values[0];
-        const income = values[values.length - 1];
-        trades.push(makeTrade({
-          market: 'FTT',
-          sourceId: id?.[0],
-          account: 'Quotex',
-          asset: asset?.[0] || 'FTT trade',
-          direction: /down|sell/i.test(block) ? 'DOWN' : 'UP',
-          amount,
-          income,
-          payout: pct?.[1],
-          open: prices[0],
-          close: prices[1],
-          openedAt: parseVisibleDate(block) || new Date().toISOString(),
-          closedAt: parseVisibleDate(block) || new Date().toISOString(),
-          strategy: 'Unclassified',
-          notes: 'Imported from screenshot.',
-        }));
-        i += 4;
-      }
-    }
+    const fttBlocks = buildFttBlocks(lines, uuid);
+    fttBlocks.forEach((block) => {
+      const trade = parseFttTextBlock(block, uuid);
+      if (trade) trades.push(trade);
+    });
   }
 
   if (forced !== 'FTT') {
@@ -1911,6 +1981,97 @@ function parseTradeText(text, forced = 'AUTO') {
     seen.add(key);
     return true;
   });
+}
+
+function buildFttBlocks(lines, uuid) {
+  const uuidLines = lines.reduce((acc, line, index) => (uuid.test(line) ? [...acc, index] : acc), []);
+  if (uuidLines.length) {
+    const starts = uuidLines.map((lineIndex, index) => findFttBlockStart(lines, lineIndex, index ? uuidLines[index - 1] + 1 : 0));
+    return uuidLines.map((lineIndex, index) => {
+      const end = starts[index + 1] ?? Math.min(lines.length, lineIndex + 10);
+      return lines.slice(starts[index], end).join(' ');
+    });
+  }
+  const assetLine = /[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?/;
+  const starts = lines.reduce((acc, line, index) => (assetLine.test(line) ? [...acc, index] : acc), []);
+  return starts.map((start, index) => lines.slice(start, starts[index + 1] ?? Math.min(lines.length, start + 10)).join(' '));
+}
+
+function findFttBlockStart(lines, idLine, lowerBound) {
+  const assetOrPayout = /[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?|\d{2,3}\s*%/;
+  for (let i = idLine; i >= lowerBound; i -= 1) {
+    if (assetOrPayout.test(lines[i])) return i;
+  }
+  return Math.max(lowerBound, idLine - 2);
+}
+
+function parseFttTextBlock(block, uuid) {
+  const asset = block.match(/[A-Z]{3}\s*\/?\s*[A-Z]{3}(?:\s*\(OTC\))?|XAU\s*\/?\s*USD(?:\s*\(OTC\))?|XAG\s*\/?\s*USD(?:\s*\(OTC\))?/i);
+  const id = block.match(uuid);
+  const pct = block.match(/(\d{2,3})\s*%/);
+  const values = extractMoneyValues(block);
+  if ((!asset && !id) || !values.length) return null;
+  const quotes = extractFttQuotes(block);
+  const dates = parseVisibleDates(block);
+  const amount = values[0];
+  const income = values.length > 1 ? values[values.length - 1] : values[0];
+  return makeTrade({
+    market: 'FTT',
+    sourceId: id?.[0],
+    account: 'Quotex',
+    asset: asset ? normalizeAsset(asset[0].replace(/\s*\/\s*/, '/').toUpperCase()) : 'FTT trade',
+    direction: inferFttDirection(block, quotes.open, quotes.close, income - amount),
+    amount,
+    income,
+    payout: pct?.[1],
+    open: quotes.open,
+    close: quotes.close,
+    openedAt: quotes.openedAt || dates[0] || new Date().toISOString(),
+    closedAt: quotes.closedAt || dates[1] || dates[0] || new Date().toISOString(),
+    strategy: 'Unclassified',
+    notes: 'Imported from screenshot.',
+  });
+}
+
+function extractMoneyValues(block) {
+  const withSymbols = [...block.matchAll(/([+-]?\s*\d{1,6}(?:[.,]\d{1,2})?)\s*(?:[$S]|USD)(?![A-Za-z])/gi)].map((match) => toNumber(match[1]));
+  if (withSymbols.length) return withSymbols;
+  return extractDecimalNumbers(block, 2, 2).filter((value) => Math.abs(value) < 100000);
+}
+
+function extractFttQuotes(block) {
+  const open = block.match(/Opening\s+quote:?\s*(\d{1,6}(?:\.\d{1,6})?)\s+(\d{2}\/\d{2}\/\d{4},?\s*\d{2}:\d{2}(?::\d{2})?)/i);
+  const close = block.match(/Closing\s+quote:?\s*(\d{1,6}(?:\.\d{1,6})?)\s+(\d{2}\/\d{2}\/\d{4},?\s*\d{2}:\d{2}(?::\d{2})?)/i);
+  const prices = extractDecimalNumbers(block, 3, 6);
+  const dates = parseVisibleDates(block);
+  return {
+    open: open?.[1] || prices[0] || '',
+    close: close?.[1] || prices[1] || '',
+    openedAt: open?.[2] ? parseVisibleDate(open[2]) : dates[0] || '',
+    closedAt: close?.[2] ? parseVisibleDate(close[2]) : dates[1] || '',
+  };
+}
+
+function extractDecimalNumbers(text, minDecimals, maxDecimals) {
+  const pattern = new RegExp(`(^|[^\\d.])(\\d{1,6}\\.\\d{${minDecimals},${maxDecimals}})(?![\\d.])`, 'g');
+  return [...String(text || '').matchAll(pattern)].map((match) => toNumber(match[2]));
+}
+
+function parseVisibleDates(text) {
+  const iso = [...String(text || '').matchAll(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?/g)].map((match) => toIso(match[0]));
+  const eu = [...String(text || '').matchAll(/(\d{2})\/(\d{2})\/(\d{4}),?\s*(\d{2}):(\d{2})(?::(\d{2}))?/g)]
+    .map((match) => `${match[3]}-${match[2]}-${match[1]}T${match[4]}:${match[5]}:${match[6] || '00'}`);
+  return [...iso, ...eu];
+}
+
+function inferFttDirection(block, open, close, profit) {
+  if (/down|sell|put|↓|⬇|↘/i.test(block)) return 'DOWN';
+  if (/up|buy|call|↑|⬆|↗/i.test(block)) return 'UP';
+  const openValue = toNumber(open);
+  const closeValue = toNumber(close);
+  if (openValue && closeValue && profit < 0) return closeValue >= openValue ? 'DOWN' : 'UP';
+  if (openValue && closeValue) return closeValue >= openValue ? 'UP' : 'DOWN';
+  return 'UP';
 }
 
 function normalizeStrategy(value) {
