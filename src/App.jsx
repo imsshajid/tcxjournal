@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
+  ArrowUp,
   BarChart3,
   CalendarDays,
   Check,
@@ -65,12 +66,19 @@ const DEFAULT_SETTINGS = {
   enabled: { FTT: true, CFD: true },
   defaultMarket: 'ALL',
   ocrMode: 'AUTO',
-  maxTrades: 5000,
+  maxTrades: 10000,
   archiveAfterDays: 365,
   theme: 'dark',
 };
 const IMPORT_LATER_KEY = 'tcxjournal.importLater.v1';
-const MAX_TRANSACTIONS = 1500;
+const LOCAL_TRADE_STORAGE_TARGET = 10000;
+const CLOUD_TRADE_LIMIT = 10000;
+const CLOUD_TRANSACTION_LIMIT = 1500;
+const MAX_UPLOAD_BYTES = {
+  image: 10 * 1024 * 1024,
+  csv: 5 * 1024 * 1024,
+  excel: 8 * 1024 * 1024,
+};
 const STRATEGIES = ['Unclassified', 'Signal Following', 'Stochastic', 'Price Action', 'Support & Resistance', 'Trend Following', 'Breakout', 'Reversal', 'Scalping', 'News Trading', 'Fibonacci', 'Moving Average', 'Bollinger Bands', 'RSI Divergence', 'OTC Strategy'];
 const EMOTIONS = ['Calm', 'Confident', 'Anxious', 'Fearful', 'Greedy', 'Revenge', 'Bored', 'Focused', 'Patient', 'Neutral'];
 const TIMEFRAMES = ['10s', '15s', '30s', '1m', '2m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
@@ -208,7 +216,7 @@ function saved() {
     return {
       trades: (parsed.trades || seedTrades).map((t) => makeTrade(t)),
       transactions: (parsed.transactions || []).map(makeTransaction),
-      settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}), enabled: { ...DEFAULT_SETTINGS.enabled, ...(parsed.settings?.enabled || {}) } },
+      settings: normalizeSettings(parsed.settings),
     };
   } catch {
     return { trades: seedTrades, transactions: [], settings: DEFAULT_SETTINGS };
@@ -229,12 +237,18 @@ function normalizeJournal(journal) {
   return {
     trades: (journal?.trades || []).map((trade) => makeTrade(trade)),
     transactions: (journal?.transactions || []).map(makeTransaction),
-    settings: {
-      ...DEFAULT_SETTINGS,
-      ...(journal?.settings || {}),
-      enabled: { ...DEFAULT_SETTINGS.enabled, ...(journal?.settings?.enabled || {}) },
-    },
+    settings: normalizeSettings(journal?.settings),
   };
+}
+
+function normalizeSettings(settings = {}) {
+  const merged = {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    enabled: { ...DEFAULT_SETTINGS.enabled, ...(settings.enabled || {}) },
+  };
+  merged.maxTrades = Math.max(CLOUD_TRADE_LIMIT, toNumber(merged.maxTrades) || CLOUD_TRADE_LIMIT);
+  return merged;
 }
 
 function mergeTrades(primary, secondary = []) {
@@ -285,6 +299,47 @@ function mergeTransactions(primary = [], secondary = []) {
   }).sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt));
 }
 
+function useScrollChrome() {
+  const [bottomNavHidden, setBottomNavHidden] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+
+  useEffect(() => {
+    let lastY = window.scrollY;
+    let idleTimer;
+    const hideScrollTopSoon = () => {
+      window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => setShowScrollTop(false), 1250);
+    };
+    const onScroll = () => {
+      const currentY = window.scrollY;
+      const delta = currentY - lastY;
+      if (currentY < 64) {
+        setBottomNavHidden(false);
+        setShowScrollTop(false);
+      } else if (delta > 5) {
+        setBottomNavHidden(true);
+        setShowScrollTop(true);
+        hideScrollTopSoon();
+      } else if (delta < -5) {
+        setBottomNavHidden(false);
+        setShowScrollTop(false);
+      }
+      lastY = Math.max(0, currentY);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.clearTimeout(idleTimer);
+    };
+  }, []);
+
+  return {
+    bottomNavHidden,
+    showScrollTop,
+    scrollToTop: () => window.scrollTo({ top: 0, behavior: 'smooth' }),
+  };
+}
+
 function App() {
   const [data, setData] = useState(saved);
   const [page, setPage] = useState('Home');
@@ -296,6 +351,7 @@ function App() {
   const [bulkEditGroup, setBulkEditGroup] = useState(null);
   const [dayPopup, setDayPopup] = useState('');
   const [accountOpen, setAccountOpen] = useState(false);
+  const { bottomNavHidden, showScrollTop, scrollToTop } = useScrollChrome();
   const [authState, setAuthState] = useState({
     configured: cloudConfigured,
     loading: cloudConfigured,
@@ -459,13 +515,15 @@ function App() {
         fresh.push(trade);
       }
     }
-    const remaining = Math.max(0, data.settings.maxTrades - data.trades.length);
-    const accepted = fresh.slice(0, remaining);
+    const cloudTradeLimit = data.settings.maxTrades || CLOUD_TRADE_LIMIT;
+    const cloudLimited = Boolean(authState.user);
+    const remaining = cloudLimited ? Math.max(0, cloudTradeLimit - data.trades.length) : fresh.length;
+    const accepted = cloudLimited ? fresh.slice(0, remaining) : fresh;
     if (accepted.length) {
       setData((current) => ({ ...current, trades: [...accepted, ...current.trades] }));
       syncCloud((uid, cloud) => cloud.saveCloudTrades(uid, accepted));
     }
-    return { added: accepted.length, skipped: normalized.length - fresh.length, limited: fresh.length - accepted.length, detected: normalized.length };
+    return { added: accepted.length, skipped: normalized.length - fresh.length, limited: cloudLimited ? fresh.length - accepted.length : 0, detected: normalized.length };
   };
 
   const importTransactions = (items) => {
@@ -475,7 +533,8 @@ function App() {
     const retained = data.transactions.filter((item) => !incomingFingerprints.has(item.fingerprint));
     const existing = new Set(retained.map(transactionKey));
     const fresh = normalized.filter((item) => !existing.has(transactionKey(item)));
-    const accepted = fresh.slice(0, Math.max(0, MAX_TRANSACTIONS - retained.length));
+    const cloudLimited = Boolean(authState.user);
+    const accepted = cloudLimited ? fresh.slice(0, Math.max(0, CLOUD_TRANSACTION_LIMIT - retained.length)) : fresh;
     if (accepted.length || replacedIds.length) {
       setData((current) => ({
         ...current,
@@ -484,7 +543,7 @@ function App() {
       if (replacedIds.length) syncCloud((uid, cloud) => cloud.deleteCloudTransactions?.(uid, replacedIds));
       syncCloud((uid, cloud) => cloud.saveCloudTransactions(uid, accepted));
     }
-    return { added: accepted.length, skipped: normalized.length - fresh.length, limited: fresh.length - accepted.length };
+    return { added: accepted.length, skipped: normalized.length - fresh.length, limited: cloudLimited ? fresh.length - accepted.length : 0 };
   };
 
   const saveTrade = (trade) => importTrades([trade]);
@@ -521,7 +580,7 @@ function App() {
     setEditingTrade(null);
   };
   const updateSettings = (settings) => {
-    const nextSettings = { ...dataRef.current.settings, ...settings };
+    const nextSettings = normalizeSettings({ ...dataRef.current.settings, ...settings });
     setData((current) => ({ ...current, settings: nextSettings }));
     syncCloud((uid, cloud) => cloud.saveCloudSettings(uid, nextSettings));
     if (settings.defaultMarket) setMarket(settings.defaultMarket);
@@ -590,7 +649,10 @@ function App() {
         )}
         {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} authState={authState} openAccount={() => setAccountOpen(true)} trades={data.trades} transactions={data.transactions} onArchive={archiveOldTrades} theme={theme} />}
       </main>
-      <BottomNav page={page} setPage={setPage} />
+      <BottomNav page={page} setPage={setPage} hidden={bottomNavHidden} />
+      <button className={showScrollTop ? 'scrollTop show' : 'scrollTop'} onClick={scrollToTop} aria-label="Scroll to top">
+        <ArrowUp size={18} />
+      </button>
       {accountOpen && (
         <AccountModal
           authState={authState}
@@ -721,7 +783,7 @@ function Topbar({ page, market, setMarket, settings, setPage, openNav, authState
   );
 }
 
-function BottomNav({ page, setPage }) {
+function BottomNav({ page, setPage, hidden }) {
   const nav = [
     ['Home', Home],
     ['New Trade', Plus],
@@ -731,7 +793,7 @@ function BottomNav({ page, setPage }) {
     ['Calendar', CalendarDays],
   ];
   return (
-    <div className="bottomNav">
+    <div className={hidden ? 'bottomNav hide' : 'bottomNav'}>
       {nav.map(([name, Icon]) => (
         <button key={name} className={page === name ? 'active' : ''} onClick={() => setPage(name)} aria-label={name}>
           <Icon size={18} />
@@ -1190,6 +1252,12 @@ function Importer({ onImport, settings, onReviewChange }) {
   async function handleFiles(fileList) {
     const files = [...(fileList || [])];
     if (!files.length) return;
+    const validation = validateUploadFiles(files, ['image', 'csv', 'excel']);
+    if (!validation.ok) {
+      setStatus(validation.message);
+      if (fileRef.current) fileRef.current.value = '';
+      return;
+    }
     setBusy(true);
     setStatus(`Preparing ${files.length} file${files.length === 1 ? '' : 's'}...`);
     try {
@@ -1246,7 +1314,7 @@ function Importer({ onImport, settings, onReviewChange }) {
     await waitForPaint();
     try {
       const result = onImport(drafts);
-      setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.${result.limited ? ` ${result.limited} over the storage limit.` : ''}`);
+      setStatus(`${result.added} new saved. ${result.skipped} duplicate skipped.${result.limited ? ` ${result.limited} over the cloud storage limit.` : ''}`);
       setDrafts([]);
       setActiveIndex(0);
       localStorage.removeItem(IMPORT_LATER_KEY);
@@ -1371,7 +1439,7 @@ function Pagination({ page, pages, total, pageSize, onChange }) {
 }
 
 function useResponsivePageSize() {
-  const calculate = () => window.innerHeight >= 980 ? 20 : window.innerHeight >= 760 ? 15 : 10;
+  const calculate = () => Math.min(20, window.innerHeight >= 980 ? 20 : window.innerHeight >= 760 ? 15 : 10);
   const [size, setSize] = useState(calculate);
   useEffect(() => {
     const resize = () => setSize(calculate());
@@ -1449,7 +1517,12 @@ function TransactionsPage({ transactions, trades, onImport, settings }) {
   const cycles = buildFundingCycles(transactions, trades);
 
   const handleFiles = async (fileList) => {
-    const files = [...(fileList || [])].filter((file) => file.type.startsWith('image/'));
+    const incoming = [...(fileList || [])];
+    const invalid = incoming.find((file) => fileUploadKind(file) !== 'image');
+    if (invalid) { setStatus('Drop PNG, JPG, or WEBP transaction screenshots.'); return; }
+    const validation = validateUploadFiles(incoming, ['image']);
+    if (!validation.ok) { setStatus(validation.message); return; }
+    const files = incoming.filter((file) => file.type.startsWith('image/'));
     if (!files.length) { setStatus('Drop PNG, JPG, or WEBP transaction screenshots.'); return; }
     setBusy(true);
     setStatus('Reading transaction screenshots...');
@@ -1484,7 +1557,14 @@ function SettingsPage({ settings, updateSettings, authState, openAccount, trades
   const toggle = (market) => updateSettings({ enabled: { ...settings.enabled, [market]: !settings.enabled[market] } });
   const [archiveStatus, setArchiveStatus] = useState('');
   const bytes = new Blob([JSON.stringify({ trades, transactions })]).size;
-  const percent = Math.min(100, trades.length / settings.maxTrades * 100);
+  const cloudTradeLimit = settings.maxTrades || CLOUD_TRADE_LIMIT;
+  const percent = Math.min(100, trades.length / (authState.user ? cloudTradeLimit : LOCAL_TRADE_STORAGE_TARGET) * 100);
+  const storageSummary = authState.user
+    ? `${trades.length.toLocaleString()} / ${cloudTradeLimit.toLocaleString()} cloud trades - ${formatBytes(bytes)} compact data`
+    : `${trades.length.toLocaleString()} local trades - ${formatBytes(bytes)} compact data`;
+  const storageCopy = authState.user
+    ? 'Private cloud sync is active. Cloud trade imports are capped; screenshots are processed, then discarded.'
+    : 'Browser local storage is active with no app-level trade count cap. Sign in to add private cloud sync.';
   return (
     <section className="page narrow">
       <div className="card settings">
@@ -1517,9 +1597,9 @@ function SettingsPage({ settings, updateSettings, authState, openAccount, trades
         </div>
         <div className="storageNote">
           <b>Storage</b>
-          <span>{trades.length.toLocaleString()} / {settings.maxTrades.toLocaleString()} trades - {formatBytes(bytes)} compact data</span>
+          <span>{storageSummary}</span>
           <div className="storageMeter"><i style={{ width: `${percent}%` }} /></div>
-          <span>{authState.user ? 'Private cloud sync is active. Screenshots are processed, then discarded to minimize storage.' : 'Browser storage is active. Sign in to add private cloud sync.'}</span>
+          <span>{storageCopy}</span>
           <button className="soft archiveButton" onClick={() => { const count = onArchive(); setArchiveStatus(count ? `${count} trades exported and removed.` : 'No trades are old enough to archive.'); }}><Download size={16} />Export & remove old trades</button>
           {archiveStatus && <span className="green">{archiveStatus}</span>}
         </div>
@@ -2691,6 +2771,28 @@ function normalizeHeader(value) {
 
 function isSheet(file) {
   return /\.(csv|xls|xlsx)$/i.test(file.name);
+}
+
+function fileUploadKind(file) {
+  if (file?.type?.startsWith('image/')) return 'image';
+  if (/\.csv$/i.test(file?.name || '')) return 'csv';
+  if (/\.xlsx?$/i.test(file?.name || '')) return 'excel';
+  return '';
+}
+
+function validateUploadFiles(files, allowedKinds) {
+  for (const file of files) {
+    const kind = fileUploadKind(file);
+    if (!allowedKinds.includes(kind)) continue;
+    const limit = MAX_UPLOAD_BYTES[kind];
+    if (limit && file.size > limit) {
+      return {
+        ok: false,
+        message: `${file.name} is ${formatBytes(file.size)}. ${title(kind)} uploads are limited to ${formatBytes(limit)} per file.`,
+      };
+    }
+  }
+  return { ok: true, message: '' };
 }
 
 function rowsFromMatrix(matrix) {
