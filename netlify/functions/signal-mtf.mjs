@@ -11,9 +11,16 @@ const json = (statusCode, body) => ({
 
 const apiBase = () => String(process.env.SIGNAL_API_BASE || process.env.API_BASE || '').trim().replace(/\/+$/, '');
 const mtfBase = () => String(process.env.SIGNAL_MTF_BASE || '').trim().replace(/\/+$/, '');
+const bridgeBase = () => String(process.env.SIGNAL_BRIDGE_BASE || process.env.SIGNAL_GROUPS_URL || '').trim().replace(/\/api\/a\/?$/i, '').replace(/\/+$/, '');
+const mtfAuthorization = () => String(
+  process.env.SIGNAL_MTF_AUTHORIZATION ||
+  process.env.SIGNAL_BRIDGE_AUTHORIZATION ||
+  process.env.SIGNAL_GROUPS_AUTHORIZATION ||
+  ''
+).trim();
 
 function mtfTargets(base, broker, asset) {
-  const roots = Array.from(new Set([mtfBase(), base].filter(Boolean)));
+  const roots = Array.from(new Set([mtfBase(), bridgeBase(), base].filter(Boolean)));
   return roots.flatMap((root) => {
     const brokerDirect = new URL(`/${broker}/mtf-analysis`, root);
     brokerDirect.searchParams.set('asset', asset);
@@ -45,7 +52,7 @@ export async function handler(event) {
   if (event.httpMethod !== 'GET') return json(405, { error: 'Method not allowed' });
 
   const base = apiBase();
-  if (!base && !mtfBase()) return json(500, { error: 'SIGNAL_API_BASE or SIGNAL_MTF_BASE is not configured in Netlify.' });
+  if (!base && !mtfBase() && !bridgeBase()) return json(500, { error: 'SIGNAL_API_BASE, SIGNAL_MTF_BASE, or SIGNAL_BRIDGE_BASE is not configured in Netlify.' });
 
   const broker = event.queryStringParameters?.broker || 'quotex';
   const asset = event.queryStringParameters?.asset || '';
@@ -59,8 +66,12 @@ export async function handler(event) {
     let lastPreview = '';
 
     for (const target of mtfTargets(base, broker, asset)) {
+      const authorization = mtfAuthorization();
       const response = await fetch(target, {
-        headers: { accept: 'application/json' },
+        headers: {
+          accept: 'application/json',
+          ...(authorization ? { authorization } : {}),
+        },
         signal: controller.signal,
       });
       const text = await response.text();
@@ -78,7 +89,14 @@ export async function handler(event) {
 
       if (parsed && parsed.error === 'AUTH_REQUIRED') {
         return json(502, {
-          error: 'SignalX MTF requires its own logged-in session. Use the backend API root in SIGNAL_API_BASE instead of the SignalX Netlify site URL.',
+          error: 'SignalX MTF requires authorization. Set SIGNAL_MTF_AUTHORIZATION or SIGNAL_BRIDGE_AUTHORIZATION in TCX Netlify.',
+        });
+      }
+
+      if (parsed && /unauthorized/i.test(String(parsed.error || parsed.message || ''))) {
+        return json(502, {
+          error: 'MTF upstream rejected authorization. Check SIGNAL_MTF_AUTHORIZATION or SIGNAL_BRIDGE_AUTHORIZATION.',
+          status: response.status,
         });
       }
     }
