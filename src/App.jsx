@@ -658,7 +658,7 @@ function Sidebar({ page, setPage, open, setOpen }) {
       <div className="brand">
         <img className="brandLogo" src="/tcx-logo.svg" alt="Trading Candle X Journal logo" />
         <div><b>TCX Journal</b><span>Trading Candle X</span></div>
-        <button className="closeNav" onClick={() => setOpen(false)}><X size={18} /></button>
+        <button className="closeNav" onClick={() => setOpen(false)} aria-label="Close navigation"><X size={18} /></button>
       </div>
       <nav>
         {nav.map(([name, Icon]) => (
@@ -688,7 +688,7 @@ function Topbar({ page, market, setMarket, settings, setPage, openNav, authState
   const lightMode = theme === 'light';
   return (
     <header className="topbar">
-      <button className="hamb" onClick={openNav}><Menu size={20} /></button>
+      <button className="hamb" onClick={openNav} aria-label="Open navigation"><Menu size={20} /></button>
       <div className="titleBlock">
         <span>Trading journal</span>
         <h1>{page}</h1>
@@ -732,7 +732,7 @@ function BottomNav({ page, setPage }) {
   return (
     <div className="bottomNav">
       {nav.map(([name, Icon]) => (
-        <button key={name} className={page === name ? 'active' : ''} onClick={() => setPage(name)}>
+        <button key={name} className={page === name ? 'active' : ''} onClick={() => setPage(name)} aria-label={name}>
           <Icon size={18} />
           <span>{name}</span>
         </button>
