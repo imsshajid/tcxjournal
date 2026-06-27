@@ -19,12 +19,14 @@ import {
   LogIn,
   LogOut,
   Menu,
+  Moon,
   Plus,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   StickyNote,
+  Sun,
   Trash2,
   UploadCloud,
   WalletCards,
@@ -46,6 +48,7 @@ import {
 } from 'recharts';
 import { recognize } from 'tesseract.js';
 import readXlsxFile from 'read-excel-file/browser';
+import SignalGenerator from './SignalGenerator';
 import './style.css';
 
 const LS = 'tcxjournal.free.v3';
@@ -64,6 +67,7 @@ const DEFAULT_SETTINGS = {
   ocrMode: 'AUTO',
   maxTrades: 5000,
   archiveAfterDays: 365,
+  theme: 'dark',
 };
 const IMPORT_LATER_KEY = 'tcxjournal.importLater.v1';
 const MAX_TRANSACTIONS = 1500;
@@ -437,6 +441,12 @@ function App() {
     () => selectedDate ? trades.filter((t) => dateKey(t.openedAt) === selectedDate) : [],
     [selectedDate, trades],
   );
+  const theme = data.settings.theme === 'light' ? 'light' : 'dark';
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
 
   const importTrades = (items) => {
     const normalized = items.map((t) => makeTrade(t)).filter((t) => t.asset && t.openedAt);
@@ -534,7 +544,7 @@ function App() {
   };
 
   return (
-    <div className="app">
+    <div className="app" data-theme={theme}>
       <Sidebar page={page} setPage={setPage} open={navOpen} setOpen={setNavOpen} />
       <main onClick={() => page === 'Home' && selectedDate && setSelectedDate('')}>
         <Topbar
@@ -546,6 +556,8 @@ function App() {
           openNav={() => setNavOpen(true)}
           authState={authState}
           openAccount={() => setAccountOpen(true)}
+          theme={theme}
+          onThemeChange={(nextTheme) => updateSettings({ theme: nextTheme })}
         />
         {page === 'Home' && (
           <Dashboard
@@ -562,6 +574,7 @@ function App() {
         {page === 'New Trade' && <NewTrade onSave={saveTrade} onImport={importTrades} settings={data.settings} onOpenTrade={setActiveTrade} />}
         {page === 'History' && <History trades={trades} deleteTrade={removeTrade} onOpenTrade={setActiveTrade} onEditTrade={setEditingTrade} onEditGroup={setBulkEditGroup} />}
         {page === 'Analytics' && <Analytics trades={trades} transactions={data.transactions} />}
+        {page === 'Signals' && <SignalGenerator />}
         {page === 'Transactions' && <TransactionsPage transactions={data.transactions} trades={data.trades} onImport={importTransactions} settings={data.settings} />}
         {page === 'Calendar' && (
           <CalendarPage
@@ -575,7 +588,7 @@ function App() {
             onEditGroup={setBulkEditGroup}
           />
         )}
-        {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} authState={authState} openAccount={() => setAccountOpen(true)} trades={data.trades} transactions={data.transactions} onArchive={archiveOldTrades} />}
+        {page === 'Settings' && <SettingsPage settings={data.settings} updateSettings={updateSettings} authState={authState} openAccount={() => setAccountOpen(true)} trades={data.trades} transactions={data.transactions} onArchive={archiveOldTrades} theme={theme} />}
       </main>
       <BottomNav page={page} setPage={setPage} />
       {accountOpen && (
@@ -635,6 +648,7 @@ function Sidebar({ page, setPage, open, setOpen }) {
     ['New Trade', Plus],
     ['History', WalletCards],
     ['Analytics', Activity],
+    ['Signals', Sparkles],
     ['Calendar', CalendarDays],
     ['Transactions', WalletCards],
     ['Settings', Settings],
@@ -669,8 +683,9 @@ function Sidebar({ page, setPage, open, setOpen }) {
   );
 }
 
-function Topbar({ page, market, setMarket, settings, setPage, openNav, authState, openAccount }) {
+function Topbar({ page, market, setMarket, settings, setPage, openNav, authState, openAccount, theme, onThemeChange }) {
   const options = ['ALL', 'FTT', 'CFD'].filter((m) => m === 'ALL' || settings.enabled[m]);
+  const lightMode = theme === 'light';
   return (
     <header className="topbar">
       <button className="hamb" onClick={openNav}><Menu size={20} /></button>
@@ -684,6 +699,14 @@ function Topbar({ page, market, setMarket, settings, setPage, openNav, authState
             <button key={m} className={market === m ? 'on' : ''} onClick={() => setMarket(m)}>{m}</button>
           ))}
         </div>
+        <button
+          className="themeButton"
+          onClick={() => onThemeChange(lightMode ? 'dark' : 'light')}
+          aria-label={lightMode ? 'Switch to night mode' : 'Switch to light mode'}
+          title={lightMode ? 'Night mode' : 'Light mode'}
+        >
+          {lightMode ? <Moon size={17} /> : <Sun size={17} />}
+        </button>
         <button className="primary" onClick={() => setPage('New Trade')}><Plus size={17} /><span>New</span></button>
         <button className={authState.user ? 'accountButton signedIn' : 'accountButton'} onClick={openAccount} aria-label="Account and cloud sync">
           {authState.user?.photoURL
@@ -702,6 +725,7 @@ function BottomNav({ page, setPage }) {
     ['Home', Home],
     ['New Trade', Plus],
     ['History', WalletCards],
+    ['Signals', Sparkles],
     ['Analytics', Activity],
     ['Calendar', CalendarDays],
   ];
@@ -794,9 +818,9 @@ function EquityPanel({ trades, title = 'Equity Curve' }) {
               <stop offset="100%" stopColor="#35d49a" stopOpacity="0" />
             </linearGradient>
           </defs>
-          <CartesianGrid stroke="rgba(255,255,255,.06)" />
-          <XAxis dataKey="label" stroke="#7f8da1" minTickGap={48} />
-          <YAxis stroke="#7f8da1" />
+          <CartesianGrid stroke="var(--chart-grid)" />
+          <XAxis dataKey="label" stroke="var(--chart-axis)" minTickGap={48} />
+          <YAxis stroke="var(--chart-axis)" />
           <Tooltip
             cursor={{ stroke: 'rgba(106,169,255,.55)', strokeDasharray: '4 4' }}
             contentStyle={tooltipStyle}
@@ -961,9 +985,9 @@ function StrategyPanel({ trades }) {
       <PanelTitle title="Strategy Edge" tag="P&L" />
       <ResponsiveContainer height={240}>
         <BarChart data={rows}>
-          <CartesianGrid stroke="rgba(255,255,255,.06)" />
-          <XAxis dataKey="name" stroke="#7f8da1" hide={rows.length > 4} />
-          <YAxis stroke="#7f8da1" />
+          <CartesianGrid stroke="var(--chart-grid)" />
+          <XAxis dataKey="name" stroke="var(--chart-axis)" hide={rows.length > 4} />
+          <YAxis stroke="var(--chart-axis)" />
           <Tooltip contentStyle={tooltipStyle} formatter={(v) => money(v)} />
           <Bar dataKey="pnl" fill="#6aa9ff" radius={[6, 6, 0, 0]} />
         </BarChart>
@@ -1455,7 +1479,7 @@ function TransactionsPage({ transactions, trades, onImport, settings }) {
   </section>;
 }
 
-function SettingsPage({ settings, updateSettings, authState, openAccount, trades, transactions, onArchive }) {
+function SettingsPage({ settings, updateSettings, authState, openAccount, trades, transactions, onArchive, theme }) {
   const toggle = (market) => updateSettings({ enabled: { ...settings.enabled, [market]: !settings.enabled[market] } });
   const [archiveStatus, setArchiveStatus] = useState('');
   const bytes = new Blob([JSON.stringify({ trades, transactions })]).size;
@@ -1480,6 +1504,13 @@ function SettingsPage({ settings, updateSettings, authState, openAccount, trades
           <label><span>Default view</span><select value={settings.defaultMarket} onChange={(e) => updateSettings({ defaultMarket: e.target.value })}><option>ALL</option><option>FTT</option><option>CFD</option></select></label>
           <label><span>OCR preference</span><select value={settings.ocrMode} onChange={(e) => updateSettings({ ocrMode: e.target.value })}><option>AUTO</option><option>FTT</option><option>CFD</option></select></label>
           <label><span>Archive trades older than</span><select value={settings.archiveAfterDays} onChange={(e) => updateSettings({ archiveAfterDays: Number(e.target.value) })}><option value="90">90 days</option><option value="180">6 months</option><option value="365">1 year</option><option value="730">2 years</option></select></label>
+          <div className="themeRow">
+            <span>Appearance</span>
+            <div className="themeChoice" role="group" aria-label="Appearance">
+              <button className={theme === 'dark' ? 'on' : ''} onClick={() => updateSettings({ theme: 'dark' })}><Moon size={16} />Night</button>
+              <button className={theme === 'light' ? 'on' : ''} onClick={() => updateSettings({ theme: 'light' })}><Sun size={16} />Light</button>
+            </div>
+          </div>
           <div className="toggleRow"><span>FTT journal</span><button className={settings.enabled.FTT ? 'toggle on' : 'toggle'} onClick={() => toggle('FTT')} /></div>
           <div className="toggleRow"><span>CFD journal</span><button className={settings.enabled.CFD ? 'toggle on' : 'toggle'} onClick={() => toggle('CFD')} /></div>
         </div>
@@ -3152,10 +3183,11 @@ function downloadText(text, filename, type) {
 }
 
 const tooltipStyle = {
-  background: '#0c121a',
-  border: '1px solid rgba(255,255,255,.12)',
+  background: 'var(--tooltip-bg)',
+  border: '1px solid var(--tooltip-border)',
   borderRadius: 8,
-  color: '#eef4ff',
+  color: 'var(--text)',
+  boxShadow: '0 18px 44px rgba(15, 23, 42, .16)',
 };
 
 createRoot(document.getElementById('root')).render(<App />);
