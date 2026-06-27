@@ -180,10 +180,14 @@ function mergeMtfPayloads({ directMtf, bridgeMtf }) {
       bridge_confirmation: bridgeFrames?.[tf] || null,
     },
   ]));
+  for (const [tf, row] of Object.entries(bridgeFrames || {})) {
+    if (!mergedFrames[tf]) mergedFrames[tf] = row;
+  }
 
   return {
     ...directMtf,
     timeframes: mergedFrames,
+    timeframe_order: [...new Set([...(bridgeMtf?.timeframe_order || []), ...Object.keys(mergedFrames)])],
     bridge_timeframes: bridgeFrames || {},
     source: bridgeFrames ? 'direct-mtf-analysis+infinity-bridge-analyze-custom' : directMtf.source,
     degraded: !bridgeFrames,
