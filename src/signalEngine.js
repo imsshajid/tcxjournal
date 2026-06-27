@@ -41,8 +41,8 @@ export function normalizeHHMM(value) {
 
 export function directionToCallPut(value) {
   const direction = String(value || '').trim().toUpperCase();
-  if (['CALL', 'BUY', 'UP', 'GREEN', 'BULLISH'].includes(direction)) return 'CALL';
-  if (['PUT', 'SELL', 'DOWN', 'RED', 'BEARISH'].includes(direction)) return 'PUT';
+  if (['CALL', 'BUY', 'UP', 'GREEN', 'BULLISH', 'COMPRA'].includes(direction)) return 'CALL';
+  if (['PUT', 'SELL', 'DOWN', 'RED', 'BEARISH', 'VENDA'].includes(direction)) return 'PUT';
   return 'NEUTRAL';
 }
 
@@ -57,6 +57,10 @@ export function parsePercent(value) {
   if (typeof value === 'number') return value;
   const match = String(value || '').match(/-?\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : NaN;
+}
+
+function clamp(number, min, max) {
+  return Math.max(min, Math.min(max, number));
 }
 
 export function extractPayoutMap(data) {
@@ -171,17 +175,18 @@ export function normalizeMtfRows(payload) {
 
 function normalizeMtfRow(tf, raw) {
   if (!raw || typeof raw !== 'object') return null;
+  const aggregateScore = countTrendScore(raw);
   const indicators = [
-    indicator('Last Candle', 'last', scoreField(pick(raw, 'last_candle', 'lastCandle', 'last_candle_signal', 'last_candle_direction')), INDICATOR_WEIGHTS.last),
-    indicator('Last 5', 'recent', candleSequenceScore(pick(raw, 'recent_candles', 'last_5', 'last5', 'last_five')) || scoreField(pick(raw, 'last_5_signal', 'last5_signal')), INDICATOR_WEIGHTS.recent),
-    indicator('EMA Cross', 'emaCross', scoreField(pick(raw, 'ema_cross', 'emaCross', 'ema_cross_sma_9_12', 'ema_sma_cross_9_12', 'ema_cross_signal', 'cross_signal')), INDICATOR_WEIGHTS.emaCross),
-    indicator('EMA 21', 'ema21', scoreField(pick(raw, 'ema_21_signal', 'ema21_signal', 'ema_21_bias')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.sma_21 ?? raw.sma21 ?? raw.price), INDICATOR_WEIGHTS.ema21),
-    indicator('EMA 9/21', 'ema921', scoreField(pick(raw, 'ema_9_21', 'ema9_21', 'ema_9_21_signal')) || compareNumbers(raw.ema_9 ?? raw.ema9, raw.ema_21 ?? raw.ema21), INDICATOR_WEIGHTS.ema921),
-    indicator('EMA 21/50', 'ema2150', scoreField(pick(raw, 'ema_21_50', 'ema21_50', 'ema_21_50_signal')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.ema2150),
-    indicator('EMA 50/100', 'ema50100', scoreField(pick(raw, 'ema_50_100', 'ema50_100', 'ema_50_100_signal')) || compareNumbers(raw.ema_50 ?? raw.ema50, raw.ema_100 ?? raw.ema100), INDICATOR_WEIGHTS.ema50100),
-    indicator('EMA P/50', 'emaPrice50', scoreField(pick(raw, 'ema_p_50', 'emaP50', 'ema_price_50', 'price_ema_50_signal')) || compareNumbers(raw.price ?? raw.close ?? raw.last_price, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.emaPrice50),
-    indicator('MACD', 'macd', scoreField(pick(raw, 'macd_direction', 'macd_signal_text', 'macd_bias')) || compareNumbers(raw.macd ?? raw.macd_line, raw.macd_signal ?? raw.signal), INDICATOR_WEIGHTS.macd),
-    indicator('RSI', 'rsi', rsiScore(raw.rsi_14 ?? raw.rsi14 ?? raw.rsi, raw.rsi_signal ?? raw.rsiSignal), INDICATOR_WEIGHTS.rsi),
+    indicator('Last Candle', 'last', withAggregate(scoreField(pick(raw, 'last_candle', 'lastCandle', 'last_candle_signal', 'last_candle_direction')), aggregateScore), INDICATOR_WEIGHTS.last),
+    indicator('Last 5', 'recent', withAggregate(candleSequenceScore(pick(raw, 'recent_candles', 'last_5', 'last5', 'last_five')) || scoreField(pick(raw, 'last_5_signal', 'last5_signal')), aggregateScore), INDICATOR_WEIGHTS.recent),
+    indicator('EMA Cross', 'emaCross', withAggregate(scoreField(pick(raw, 'ema_cross', 'emaCross', 'ema_cross_sma_9_12', 'ema_sma_cross_9_12', 'ema_cross_signal', 'cross_signal')), aggregateScore), INDICATOR_WEIGHTS.emaCross),
+    indicator('EMA 21', 'ema21', withAggregate(scoreField(pick(raw, 'ema_21_signal', 'ema21_signal', 'ema_21_bias')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.sma_21 ?? raw.sma21 ?? raw.price), aggregateScore), INDICATOR_WEIGHTS.ema21),
+    indicator('EMA 9/21', 'ema921', withAggregate(scoreField(pick(raw, 'ema_9_21', 'ema9_21', 'ema_9_21_signal')) || compareNumbers(raw.ema_9 ?? raw.ema9, raw.ema_21 ?? raw.ema21), aggregateScore), INDICATOR_WEIGHTS.ema921),
+    indicator('EMA 21/50', 'ema2150', withAggregate(scoreField(pick(raw, 'ema_21_50', 'ema21_50', 'ema_21_50_signal')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.ema_50 ?? raw.ema50), aggregateScore), INDICATOR_WEIGHTS.ema2150),
+    indicator('EMA 50/100', 'ema50100', withAggregate(scoreField(pick(raw, 'ema_50_100', 'ema50_100', 'ema_50_100_signal')) || compareNumbers(raw.ema_50 ?? raw.ema50, raw.ema_100 ?? raw.ema100), aggregateScore), INDICATOR_WEIGHTS.ema50100),
+    indicator('EMA P/50', 'emaPrice50', withAggregate(scoreField(pick(raw, 'ema_p_50', 'emaP50', 'ema_price_50', 'price_ema_50_signal')) || compareNumbers(raw.price ?? raw.close ?? raw.last_price, raw.ema_50 ?? raw.ema50), aggregateScore), INDICATOR_WEIGHTS.emaPrice50),
+    indicator('MACD', 'macd', withAggregate(scoreField(pick(raw, 'macd_direction', 'macd_signal_text', 'macd_bias')) || compareNumbers(raw.macd ?? raw.macd_line, raw.macd_signal ?? raw.signal), aggregateScore), INDICATOR_WEIGHTS.macd),
+    indicator('RSI', 'rsi', withAggregate(rsiScore(raw.rsi_14 ?? raw.rsi14 ?? raw.rsi, raw.rsi_signal ?? raw.rsiSignal), aggregateScore), INDICATOR_WEIGHTS.rsi),
     indicator('Exhaustion', 'exhaustion', exhaustionScore(pick(raw, 'exhaustion', 'exhaustion_signal', 'exhaustionSignal')), INDICATOR_WEIGHTS.exhaustion),
   ];
   const usable = indicators.filter((item) => Number.isFinite(item.score));
@@ -197,6 +202,115 @@ function normalizeMtfRow(tf, raw) {
   };
 }
 
+function withAggregate(score, aggregateScore) {
+  if (score) return score;
+  return Number.isFinite(aggregateScore) ? aggregateScore : 0;
+}
+
+export function buildSignalXFallback({ asset, time, timeframe, mtfRows }) {
+  const matrix = inferSignalXMatrix(mtfRows, timeframe);
+  if (!matrix || matrix.direction === 'NEUTRAL') return null;
+
+  const accuracy = clamp(Math.round(matrix.probability - 8), 62, 82);
+  return {
+    asset,
+    entrada: time,
+    time,
+    direcao_principal: matrix.direction,
+    accuracy,
+    generated: true,
+    source: 'signalx-mtf-fallback',
+    resultado_backtest: {
+      precisao_geral: accuracy,
+      direcao_geral: matrix.direction,
+    },
+  };
+}
+
+function inferSignalXMatrix(rows, selectedTimeframe) {
+  const usableRows = (rows || []).filter((row) => Number.isFinite(row?.score));
+  if (!usableRows.length) return null;
+
+  const selectedTf = MTF_LADDER.includes(selectedTimeframe) ? selectedTimeframe : 'M5';
+  const selected = usableRows.find((row) => row.tf === selectedTf) || usableRows[0];
+  const selectedScore = selected?.score ?? 0;
+  let direction = selectedScore > 0 ? 'CALL' : selectedScore < 0 ? 'PUT' : 'NEUTRAL';
+
+  if (Math.abs(selectedScore) < 0.06) {
+    const dominant = dominantMtfDirection(usableRows);
+    if (!dominant || Math.abs(dominant.bias) < 0.12) return null;
+    direction = dominant.direction;
+  }
+
+  const dirSign = direction === 'CALL' ? 1 : -1;
+  let alignedWeight = 0;
+  let opposingWeight = 0;
+  let neutralWeight = 0;
+  let signedTotal = 0;
+  let totalWeight = 0;
+
+  for (const row of usableRows) {
+    const score = row.score ?? 0;
+    const weight = signalXDecisionWeight(row.tf, selectedTf);
+    totalWeight += weight;
+    signedTotal += score * dirSign * weight;
+
+    if (Math.abs(score) < 0.12) neutralWeight += weight;
+    else if ((score * dirSign) > 0) alignedWeight += weight;
+    else opposingWeight += weight;
+  }
+
+  const activeWeight = alignedWeight + opposingWeight + (neutralWeight * 0.25);
+  const alignment = activeWeight ? alignedWeight / activeWeight : 0;
+  const directionalBias = totalWeight ? signedTotal / totalWeight : 0;
+  const avgStrength = usableRows.reduce((sum, row) => sum + Math.abs(row.score ?? 0), 0) / usableRows.length;
+  const higherOpposition = usableRows.some((row) => {
+    const rowIndex = MTF_LADDER.indexOf(row.tf);
+    const selectedIndex = MTF_LADDER.indexOf(selectedTf);
+    return rowIndex > selectedIndex && Math.abs(row.score ?? 0) >= 0.72 && ((row.score ?? 0) * dirSign) < 0;
+  });
+
+  let probability = 54 + (Math.abs(selectedScore) * 28) + (Math.max(0, directionalBias) * 16) + (alignment * 14) - ((opposingWeight / Math.max(totalWeight, 1)) * 12);
+  if (higherOpposition) probability -= 10;
+  probability = clamp(Math.round(probability), 0, 96);
+
+  if (
+    probability < 58 ||
+    alignment < 0.34 ||
+    directionalBias < -0.12 ||
+    avgStrength < 0.08 ||
+    (higherOpposition && probability < 72)
+  ) {
+    return null;
+  }
+
+  return { direction, probability, alignment, directionalBias };
+}
+
+function dominantMtfDirection(rows) {
+  let weighted = 0;
+  let total = 0;
+  for (const row of rows) {
+    const weight = TF_WEIGHTS[row.tf] || 1;
+    weighted += (row.score ?? 0) * weight;
+    total += weight;
+  }
+  const bias = total ? weighted / total : 0;
+  if (bias > 0.12) return { direction: 'CALL', bias };
+  if (bias < -0.12) return { direction: 'PUT', bias };
+  return null;
+}
+
+function signalXDecisionWeight(tf, selectedTf) {
+  const rowIndex = MTF_LADDER.indexOf(tf);
+  const selectedIndex = MTF_LADDER.indexOf(selectedTf);
+  const base = TF_WEIGHTS[tf] || 1;
+  if (rowIndex < 0 || selectedIndex < 0) return base;
+  if (rowIndex < selectedIndex) return base * 0.35;
+  if (rowIndex === selectedIndex) return base * 1.45;
+  return base * (1 + ((rowIndex - selectedIndex) * 0.08));
+}
+
 function indicator(label, key, score, weight) {
   return {
     label,
@@ -209,6 +323,22 @@ function indicator(label, key, score, weight) {
 function firstNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function countTrendScore(raw) {
+  const tendencyScore = directionScore(raw.tendency ?? raw.majority ?? raw.trend ?? raw.direction);
+  const calls = firstNumber(raw.call_count ?? raw.callCount ?? raw.calls ?? raw.green_count ?? raw.greenCount);
+  const puts = firstNumber(raw.put_count ?? raw.putCount ?? raw.puts ?? raw.red_count ?? raw.redCount);
+
+  if (calls == null || puts == null) return tendencyScore || NaN;
+
+  const active = calls + puts;
+  if (!active) return tendencyScore || NaN;
+
+  const countScore = (calls - puts) / active;
+  if (Math.abs(countScore) >= 0.12 || !tendencyScore) return countScore;
+
+  return tendencyScore * (0.18 + Math.min(0.32, Math.abs(countScore) * 2));
 }
 
 function pick(raw, ...keys) {
@@ -286,26 +416,40 @@ function exhaustionScore(value) {
 
 export function decideSignal({ asset, time, timeframe, payout, apexMatch, mtfRows }) {
   if (!apexMatch) {
+    const matrix = inferSignalXMatrix(mtfRows, timeframe);
+    const hasMtfData = Array.isArray(mtfRows) && mtfRows.length > 0;
     return {
       status: 'NO_SIGNAL',
       direction: 'WAIT',
-      confidence: 0,
-      headline: 'No scheduled match',
-      summary: `Apex has no ${timeframe} setup for ${signalAssetLabel(asset)} at ${time}.`,
-      checks: [],
+      confidence: matrix?.probability || 0,
+      headline: 'No clean setup',
+      summary: matrix
+        ? `Apex has no exact ${timeframe} setup for ${signalAssetLabel(asset)} at ${time}, and the MTF fallback is not clean enough to enter.`
+        : hasMtfData
+          ? `Apex has no exact ${timeframe} setup for ${signalAssetLabel(asset)} at ${time}, and the MTF matrix is too conflicted for a clean fallback entry.`
+          : `Apex has no exact ${timeframe} setup for ${signalAssetLabel(asset)} at ${time}, and MTF did not return data.`,
+      sourceLabel: 'No catalogue match',
+      checks: hasMtfData ? [
+        { label: 'MTF frames', value: mtfRows.length, state: matrix ? 'warn' : 'neutral' },
+      ] : [],
     };
   }
 
+  const isFallback = apexMatch.generated || apexMatch.source === 'signalx-mtf-fallback';
   const apexDirection = directionToCallPut(apexMatch.direcao_principal || apexMatch.resultado_backtest?.direcao_geral);
   const apexAccuracy = parsePercent(apexMatch.resultado_backtest?.precisao_geral ?? apexMatch.accuracy);
   const mtf = scoreMtfRows(mtfRows, apexDirection);
   const payoutScore = Math.max(0, Math.min(10, (Number(payout) - MIN_PAYOUT) / 2));
-  const apexScore = 30 + Math.max(0, Math.min(15, Number.isFinite(apexAccuracy) ? (apexAccuracy - 80) : 8));
+  const apexScore = isFallback
+    ? 34 + Math.max(0, Math.min(8, Number.isFinite(apexAccuracy) ? (apexAccuracy - 70) / 2 : 4))
+    : 30 + Math.max(0, Math.min(15, Number.isFinite(apexAccuracy) ? (apexAccuracy - 80) : 8));
   const conflictPenalty = mtf.opposition >= 0.42 ? 24 : mtf.opposition >= 0.28 ? 14 : 0;
   const rawScore = apexScore + mtf.score + payoutScore - conflictPenalty;
   const confidence = Math.max(0, Math.min(96, Math.round(rawScore)));
   const hasHardConflict = mtf.direction !== 'NEUTRAL' && mtf.direction !== apexDirection && mtf.confidence >= 60;
-  const status = hasHardConflict || confidence < 72 ? 'SKIP' : confidence >= 86 ? 'STRONG' : 'VALID';
+  const validThreshold = isFallback ? 50 : 72;
+  const strongThreshold = isFallback ? 78 : 86;
+  const status = hasHardConflict || confidence < validThreshold ? 'SKIP' : confidence >= strongThreshold ? 'STRONG' : 'VALID';
   const direction = status === 'SKIP' ? 'WAIT' : apexDirection;
 
   return {
@@ -313,11 +457,14 @@ export function decideSignal({ asset, time, timeframe, payout, apexMatch, mtfRow
     direction,
     confidence,
     headline: status === 'STRONG' ? `Strong ${apexDirection}` : status === 'VALID' ? `${apexDirection} setup` : 'Skip this entry',
-    summary: buildSummary({ status, apexDirection, apexAccuracy, mtf, payout, conflictPenalty }),
+    summary: buildSummary({ status, apexDirection, apexAccuracy, mtf, payout, conflictPenalty, isFallback }),
     apexAccuracy: Number.isFinite(apexAccuracy) ? apexAccuracy : null,
+    sourceLabel: isFallback
+      ? `${Number.isFinite(apexAccuracy) ? apexAccuracy : Math.round(confidence)}% SignalX fallback`
+      : `${Number.isFinite(apexAccuracy) ? apexAccuracy : Math.round(confidence)}% apex`,
     checks: [
-      { label: 'Apex exact time', value: 30, state: 'good' },
-      { label: 'Apex accuracy', value: Math.round(apexScore - 30), state: (apexAccuracy || 0) >= 90 ? 'good' : 'neutral' },
+      { label: isFallback ? 'SignalX fallback' : 'Apex exact time', value: Math.round(apexScore), state: isFallback ? 'warn' : 'good' },
+      { label: isFallback ? 'Estimated edge' : 'Apex accuracy', value: Math.round(isFallback ? Math.max(0, apexScore - 34) : apexScore - 30), state: (apexAccuracy || 0) >= (isFallback ? 76 : 90) ? 'good' : 'neutral' },
       { label: 'MTF alignment', value: Math.round(mtf.score), state: mtf.direction === apexDirection ? 'good' : 'warn' },
       { label: 'Payout quality', value: Math.round(payoutScore), state: payout >= 85 ? 'good' : 'neutral' },
       { label: 'Conflict control', value: -conflictPenalty, state: conflictPenalty ? 'bad' : 'good' },
@@ -354,11 +501,20 @@ function scoreMtfRows(rows, targetDirection) {
   };
 }
 
-function buildSummary({ status, apexDirection, apexAccuracy, mtf, payout, conflictPenalty }) {
+function buildSummary({ status, apexDirection, apexAccuracy, mtf, payout, conflictPenalty, isFallback }) {
   if (status === 'SKIP') {
+    if (isFallback) {
+      return conflictPenalty
+        ? `SignalX-style MTF points ${apexDirection}, but the matrix has too much opposition. Wait for cleaner alignment.`
+        : `SignalX-style MTF found a ${apexDirection} edge, but the fallback score is still too low for a clean entry.`;
+    }
     return conflictPenalty
       ? `Apex points ${apexDirection}, but the MTF matrix has too much opposition. Wait for cleaner alignment.`
       : `Apex matched, but the combined score is not strong enough for a clean entry.`;
+  }
+  if (isFallback) {
+    const accuracyText = Number.isFinite(apexAccuracy) ? `${apexAccuracy}% estimated edge` : 'SignalX-style MTF fallback';
+    return `No exact Apex catalogue match, so TCX used ${accuracyText}, ${Math.round(mtf.alignment * 100)}% MTF alignment, and ${payout}% payout for this ${apexDirection} setup.`;
   }
   const accuracyText = Number.isFinite(apexAccuracy) ? `${apexAccuracy}% apex accuracy` : 'apex schedule match';
   return `${accuracyText}, ${Math.round(mtf.alignment * 100)}% MTF alignment, and ${payout}% payout support this ${apexDirection} setup.`;

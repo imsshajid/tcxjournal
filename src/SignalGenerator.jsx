@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import {
   decideSignal,
+  buildSignalXFallback,
   fetchApexSignals,
   fetchMtf,
   fetchPayouts,
@@ -86,32 +87,35 @@ export default function SignalGenerator() {
     setMtfRows([]);
 
     try {
-      const apexPayload = await fetchApexSignals({ asset, time: entryTime, timeframe });
-      const apexMatch = findApexMatch(apexPayload, asset, entryTime);
+      const [apexOutcome, mtfOutcome] = await Promise.allSettled([
+        fetchApexSignals({ asset, time: entryTime, timeframe }),
+        fetchMtf(asset),
+      ]);
 
-      if (!apexMatch) {
-        setResult(decideSignal({
-          asset,
-          time: entryTime,
-          timeframe,
-          payout: selected.payout,
-          apexMatch: null,
-          mtfRows: [],
-        }));
-        return;
+      const rows = mtfOutcome.status === 'fulfilled' ? normalizeMtfRows(mtfOutcome.value) : [];
+      setMtfRows(rows);
+
+      let apexMatch = null;
+      if (apexOutcome.status === 'fulfilled') {
+        apexMatch = findApexMatch(apexOutcome.value, asset, entryTime);
       }
 
-      const mtfPayload = await fetchMtf(asset);
-      const rows = normalizeMtfRows(mtfPayload);
+      const fallbackMatch = !apexMatch
+        ? buildSignalXFallback({ asset, time: entryTime, timeframe, mtfRows: rows })
+        : null;
+
+      if (!apexMatch && !fallbackMatch && apexOutcome.status === 'rejected' && !rows.length) {
+        throw apexOutcome.reason;
+      }
+
       const decision = decideSignal({
         asset,
         time: entryTime,
         timeframe,
         payout: selected.payout,
-        apexMatch,
+        apexMatch: apexMatch || fallbackMatch,
         mtfRows: rows,
       });
-      setMtfRows(rows);
       setResult(decision);
     } catch (generateError) {
       setError(generateError.message || 'Signal generation failed.');
@@ -126,7 +130,7 @@ export default function SignalGenerator() {
         <div>
           <span className="miniCaps">TCX signal generator</span>
           <h2>OTC confluence desk</h2>
-          <p>Only apex-supported assets with at least {MIN_PAYOUT}% payout are eligible. The selected minute must match the apex schedule before MTF confirmation is used.</p>
+          <p>Assets with at least {MIN_PAYOUT}% payout are eligible. Apex matches get priority; MTF can generate a lower-confidence fallback when the catalogue has no exact setup.</p>
         </div>
         <div className="signalHeroStats">
           <SignalStat icon={<ShieldCheck size={18} />} label="Payout floor" value={`${MIN_PAYOUT}%`} />
@@ -242,7 +246,7 @@ function SignalResult({ result, selected, time, timeframe, generating }) {
       <div className="signalBadges">
         <span>{selected?.payout ? `${selected.payout}% payout` : 'Payout unavailable'}</span>
         <span>{result?.status || 'Awaiting scan'}</span>
-        <span>{result?.apexAccuracy ? `${result.apexAccuracy}% apex` : 'Apex exact-time gate'}</span>
+        <span>{result?.sourceLabel || 'Apex + MTF gate'}</span>
       </div>
 
       {!!result?.checks?.length && (
