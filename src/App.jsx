@@ -665,6 +665,7 @@ function Sidebar({ page, setPage, open, setOpen }) {
           <button
             key={name}
             className={page === name ? 'active' : ''}
+            aria-label={name}
             onClick={() => {
               setPage(name);
               setOpen(false);
@@ -1026,8 +1027,8 @@ function TradeList({ title = 'Trade History', trades, compact = false, hideSessi
           <small>{shortDate(trade.openedAt)} - {timeOnly(trade.openedAt)} - {trade.market} {trade.direction}</small>
         </div>
         <span className="chipLine"><i>{trade.strategy}</i><i>{trade.emotion}</i></span>
-        {!hideSession && <span>{trade.session}<small>{multiple ? `Closes ${timeOnly(trade.closedAt)}` : trade.market === 'FTT' ? trade.duration || 'Timed trade' : trade.closeReason || 'CFD trade'}</small></span>}
-        <span className={trade.profit >= 0 ? 'green' : 'red'}>
+        {!hideSession && <span className="tradeSessionValue">{trade.session}<small>{multiple ? `Closes ${timeOnly(trade.closedAt)}` : trade.market === 'FTT' ? trade.duration || 'Timed trade' : trade.closeReason || 'CFD trade'}</small></span>}
+        <span className={`tradeResultValue ${trade.profit >= 0 ? 'green' : 'red'}`}>
           {money(trade.profit)}
           {multiple
             ? <small>{trade.market === 'FTT' ? `${money(trade.amount)} total stake` : `${formatAmount(trade.amount)} total lot`}</small>
@@ -1852,10 +1853,10 @@ function TradeFormFields({ draft, set }) {
         <span>Direction</span>
         <div className="twoBtns">
           <button className={['UP', 'BUY'].includes(draft.direction) ? 'selected up' : ''} onClick={() => set('direction', isFtt ? 'UP' : 'BUY')}>
-            Buy
+            {isFtt ? 'Up' : 'Buy'}
           </button>
           <button className={['DOWN', 'SELL'].includes(draft.direction) ? 'selected dn' : ''} onClick={() => set('direction', isFtt ? 'DOWN' : 'SELL')}>
-            Sell
+            {isFtt ? 'Down' : 'Sell'}
           </button>
         </div>
       </div>
