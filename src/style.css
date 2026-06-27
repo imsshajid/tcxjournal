@@ -2096,6 +2096,25 @@ body {
   width: 100%;
 }
 
+.signalToggleRow {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255,255,255,.035);
+}
+
+.signalToggleRow span {
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .signalOutput {
   display: grid;
   gap: 14px;
@@ -2386,6 +2405,7 @@ body {
 :root[data-theme="light"] .queueItem,
 :root[data-theme="light"] .miniTrade,
 :root[data-theme="light"] .toggleRow,
+:root[data-theme="light"] .signalToggleRow,
 :root[data-theme="light"] .storageNote,
 :root[data-theme="light"] .themeRow,
 :root[data-theme="light"] .themeChoice,

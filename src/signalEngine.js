@@ -3,6 +3,7 @@ import { compactSignalAsset, payoutLookupKeys, signalAssetLabel, SIGNAL_ASSETS }
 export const SIGNAL_TIMEFRAMES = ['M1', 'M5', 'M15'];
 export const MTF_LADDER = ['M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 export const MIN_PAYOUT = 80;
+const DECISION_TIMEFRAMES = ['M1', ...MTF_LADDER];
 
 const INDICATOR_WEIGHTS = {
   last: 8,
@@ -19,6 +20,7 @@ const INDICATOR_WEIGHTS = {
 };
 
 const TF_WEIGHTS = {
+  M1: 1.1,
   M5: 1.4,
   M15: 1.8,
   M30: 2.1,
@@ -131,8 +133,14 @@ export async function fetchPayouts() {
   return readJsonOrThrow(response, 'Payout');
 }
 
-export async function fetchMtf(asset) {
-  const response = await fetch(`/.netlify/functions/signal-mtf?broker=quotex&asset=${encodeURIComponent(compactSignalAsset(asset))}`, {
+export async function fetchMtf(asset, { advanced = false, timeframe = 'M1' } = {}) {
+  const params = new URLSearchParams({
+    broker: 'quotex',
+    asset: compactSignalAsset(asset),
+    timeframe,
+  });
+  if (advanced) params.set('advanced', '1');
+  const response = await fetch(`/.netlify/functions/signal-mtf?${params}`, {
     headers: { accept: 'application/json' },
   });
   return readJsonOrThrow(response, 'MTF analysis');
@@ -168,7 +176,9 @@ export function findApexMatch(payload, asset, time) {
 
 export function normalizeMtfRows(payload) {
   const map = payload?.timeframes || payload?.data?.timeframes || {};
-  return MTF_LADDER
+  const order = Array.isArray(payload?.timeframe_order) ? payload.timeframe_order : MTF_LADDER;
+  const keys = [...new Set([...order, ...Object.keys(map)])];
+  return keys
     .map((tf) => normalizeMtfRow(tf, map[tf]))
     .filter(Boolean);
 }
@@ -177,21 +187,23 @@ function normalizeMtfRow(tf, raw) {
   if (!raw || typeof raw !== 'object') return null;
   const aggregateScore = countTrendScore(raw);
   const indicators = [
-    indicator('Last Candle', 'last', withAggregate(scoreField(pick(raw, 'last_candle', 'lastCandle', 'last_candle_signal', 'last_candle_direction')), aggregateScore), INDICATOR_WEIGHTS.last),
-    indicator('Last 5', 'recent', withAggregate(candleSequenceScore(pick(raw, 'recent_candles', 'last_5', 'last5', 'last_five')) || scoreField(pick(raw, 'last_5_signal', 'last5_signal')), aggregateScore), INDICATOR_WEIGHTS.recent),
-    indicator('EMA Cross', 'emaCross', withAggregate(scoreField(pick(raw, 'ema_cross', 'emaCross', 'ema_cross_sma_9_12', 'ema_sma_cross_9_12', 'ema_cross_signal', 'cross_signal')), aggregateScore), INDICATOR_WEIGHTS.emaCross),
-    indicator('EMA 21', 'ema21', withAggregate(scoreField(pick(raw, 'ema_21_signal', 'ema21_signal', 'ema_21_bias')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.sma_21 ?? raw.sma21 ?? raw.price), aggregateScore), INDICATOR_WEIGHTS.ema21),
-    indicator('EMA 9/21', 'ema921', withAggregate(scoreField(pick(raw, 'ema_9_21', 'ema9_21', 'ema_9_21_signal')) || compareNumbers(raw.ema_9 ?? raw.ema9, raw.ema_21 ?? raw.ema21), aggregateScore), INDICATOR_WEIGHTS.ema921),
-    indicator('EMA 21/50', 'ema2150', withAggregate(scoreField(pick(raw, 'ema_21_50', 'ema21_50', 'ema_21_50_signal')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.ema_50 ?? raw.ema50), aggregateScore), INDICATOR_WEIGHTS.ema2150),
-    indicator('EMA 50/100', 'ema50100', withAggregate(scoreField(pick(raw, 'ema_50_100', 'ema50_100', 'ema_50_100_signal')) || compareNumbers(raw.ema_50 ?? raw.ema50, raw.ema_100 ?? raw.ema100), aggregateScore), INDICATOR_WEIGHTS.ema50100),
-    indicator('EMA P/50', 'emaPrice50', withAggregate(scoreField(pick(raw, 'ema_p_50', 'emaP50', 'ema_price_50', 'price_ema_50_signal')) || compareNumbers(raw.price ?? raw.close ?? raw.last_price, raw.ema_50 ?? raw.ema50), aggregateScore), INDICATOR_WEIGHTS.emaPrice50),
-    indicator('MACD', 'macd', withAggregate(scoreField(pick(raw, 'macd_direction', 'macd_signal_text', 'macd_bias')) || compareNumbers(raw.macd ?? raw.macd_line, raw.macd_signal ?? raw.signal), aggregateScore), INDICATOR_WEIGHTS.macd),
-    indicator('RSI', 'rsi', withAggregate(rsiScore(raw.rsi_14 ?? raw.rsi14 ?? raw.rsi, raw.rsi_signal ?? raw.rsiSignal), aggregateScore), INDICATOR_WEIGHTS.rsi),
+    indicator('Last Candle', 'last', scoreField(pick(raw, 'last_candle', 'lastCandle', 'last_candle_signal', 'last_candle_direction')), INDICATOR_WEIGHTS.last),
+    indicator('Last 5', 'recent', candleSequenceScore(pick(raw, 'recent_candles', 'last_5', 'last5', 'last_five')) || scoreField(pick(raw, 'last_5_signal', 'last5_signal')), INDICATOR_WEIGHTS.recent),
+    indicator('EMA Cross', 'emaCross', scoreField(pick(raw, 'ema_cross', 'emaCross', 'ema_cross_sma_9_12', 'ema_sma_cross_9_12', 'ema_cross_signal', 'cross_signal')), INDICATOR_WEIGHTS.emaCross),
+    indicator('EMA 21', 'ema21', scoreField(pick(raw, 'ema_21_signal', 'ema21_signal', 'ema_21_bias')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.sma_21 ?? raw.sma21 ?? raw.price), INDICATOR_WEIGHTS.ema21),
+    indicator('EMA 9/21', 'ema921', scoreField(pick(raw, 'ema_9_21', 'ema9_21', 'ema_9_21_signal')) || compareNumbers(raw.ema_9 ?? raw.ema9, raw.ema_21 ?? raw.ema21), INDICATOR_WEIGHTS.ema921),
+    indicator('EMA 21/50', 'ema2150', scoreField(pick(raw, 'ema_21_50', 'ema21_50', 'ema_21_50_signal')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.ema2150),
+    indicator('EMA 50/100', 'ema50100', scoreField(pick(raw, 'ema_50_100', 'ema50_100', 'ema_50_100_signal')) || compareNumbers(raw.ema_50 ?? raw.ema50, raw.ema_100 ?? raw.ema100), INDICATOR_WEIGHTS.ema50100),
+    indicator('EMA P/50', 'emaPrice50', scoreField(pick(raw, 'ema_p_50', 'emaP50', 'ema_price_50', 'price_ema_50_signal')) || compareNumbers(raw.price ?? raw.close ?? raw.last_price, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.emaPrice50),
+    indicator('MACD', 'macd', scoreField(pick(raw, 'macd_direction', 'macd_signal_text', 'macd_bias')) || compareNumbers(raw.macd_histogram, 0) || compareNumbers(raw.macd ?? raw.macd_line, raw.macd_signal ?? raw.signal), INDICATOR_WEIGHTS.macd),
+    indicator('RSI', 'rsi', rsiScore(raw.rsi_14 ?? raw.rsi14 ?? raw.rsi, raw.rsi_signal ?? raw.rsiSignal), INDICATOR_WEIGHTS.rsi),
     indicator('Exhaustion', 'exhaustion', exhaustionScore(pick(raw, 'exhaustion', 'exhaustion_signal', 'exhaustionSignal')), INDICATOR_WEIGHTS.exhaustion),
   ];
-  const usable = indicators.filter((item) => Number.isFinite(item.score));
+  const signalIndicators = indicators.filter((item) => Number.isFinite(item.score) && Math.abs(item.score) > 0.01);
+  const usable = signalIndicators.length ? signalIndicators : indicators.filter((item) => Number.isFinite(item.score));
   const totalWeight = usable.reduce((sum, item) => sum + item.weight, 0);
-  const score = totalWeight ? usable.reduce((sum, item) => sum + item.score * item.weight, 0) / totalWeight : 0;
+  const indicatorScore = totalWeight ? usable.reduce((sum, item) => sum + item.score * item.weight, 0) / totalWeight : 0;
+  const score = signalIndicators.length ? indicatorScore : (Number.isFinite(aggregateScore) ? aggregateScore : indicatorScore);
   const confidence = Math.round(Math.abs(score) * 100);
   return {
     tf,
@@ -200,11 +212,6 @@ function normalizeMtfRow(tf, raw) {
     confidence,
     indicators,
   };
-}
-
-function withAggregate(score, aggregateScore) {
-  if (score) return score;
-  return Number.isFinite(aggregateScore) ? aggregateScore : 0;
 }
 
 export function buildSignalXFallback({ asset, time, timeframe, mtfRows }) {
@@ -218,6 +225,8 @@ export function buildSignalXFallback({ asset, time, timeframe, mtfRows }) {
     time,
     direcao_principal: matrix.direction,
     accuracy,
+    matrixProbability: matrix.probability,
+    matrixAlignment: matrix.alignment,
     generated: true,
     source: 'signalx-mtf-fallback',
     resultado_backtest: {
@@ -231,7 +240,7 @@ function inferSignalXMatrix(rows, selectedTimeframe) {
   const usableRows = (rows || []).filter((row) => Number.isFinite(row?.score));
   if (!usableRows.length) return null;
 
-  const selectedTf = MTF_LADDER.includes(selectedTimeframe) ? selectedTimeframe : 'M5';
+  const selectedTf = DECISION_TIMEFRAMES.includes(selectedTimeframe) ? selectedTimeframe : 'M5';
   const selected = usableRows.find((row) => row.tf === selectedTf) || usableRows[0];
   const selectedScore = selected?.score ?? 0;
   let direction = selectedScore > 0 ? 'CALL' : selectedScore < 0 ? 'PUT' : 'NEUTRAL';
@@ -265,8 +274,8 @@ function inferSignalXMatrix(rows, selectedTimeframe) {
   const directionalBias = totalWeight ? signedTotal / totalWeight : 0;
   const avgStrength = usableRows.reduce((sum, row) => sum + Math.abs(row.score ?? 0), 0) / usableRows.length;
   const higherOpposition = usableRows.some((row) => {
-    const rowIndex = MTF_LADDER.indexOf(row.tf);
-    const selectedIndex = MTF_LADDER.indexOf(selectedTf);
+    const rowIndex = DECISION_TIMEFRAMES.indexOf(row.tf);
+    const selectedIndex = DECISION_TIMEFRAMES.indexOf(selectedTf);
     return rowIndex > selectedIndex && Math.abs(row.score ?? 0) >= 0.72 && ((row.score ?? 0) * dirSign) < 0;
   });
 
@@ -302,8 +311,8 @@ function dominantMtfDirection(rows) {
 }
 
 function signalXDecisionWeight(tf, selectedTf) {
-  const rowIndex = MTF_LADDER.indexOf(tf);
-  const selectedIndex = MTF_LADDER.indexOf(selectedTf);
+  const rowIndex = DECISION_TIMEFRAMES.indexOf(tf);
+  const selectedIndex = DECISION_TIMEFRAMES.indexOf(selectedTf);
   const base = TF_WEIGHTS[tf] || 1;
   if (rowIndex < 0 || selectedIndex < 0) return base;
   if (rowIndex < selectedIndex) return base * 0.35;
@@ -336,7 +345,11 @@ function countTrendScore(raw) {
   if (!active) return tendencyScore || NaN;
 
   const countScore = (calls - puts) / active;
-  if (Math.abs(countScore) >= 0.12 || !tendencyScore) return countScore;
+  if (!tendencyScore) return countScore;
+  if (Math.sign(countScore) === tendencyScore) {
+    return tendencyScore * clamp(0.28 + (Math.abs(countScore) * 1.25), 0.28, 0.78);
+  }
+  if (Math.abs(countScore) >= 0.12) return countScore;
 
   return tendencyScore * (0.18 + Math.min(0.32, Math.abs(countScore) * 2));
 }
@@ -445,7 +458,10 @@ export function decideSignal({ asset, time, timeframe, payout, apexMatch, mtfRow
     : 30 + Math.max(0, Math.min(15, Number.isFinite(apexAccuracy) ? (apexAccuracy - 80) : 8));
   const conflictPenalty = mtf.opposition >= 0.42 ? 24 : mtf.opposition >= 0.28 ? 14 : 0;
   const rawScore = apexScore + mtf.score + payoutScore - conflictPenalty;
-  const confidence = Math.max(0, Math.min(96, Math.round(rawScore)));
+  const confidence = Math.max(
+    0,
+    Math.min(96, Math.round(isFallback ? Math.max(rawScore, apexMatch.matrixProbability || 0) : rawScore)),
+  );
   const hasHardConflict = mtf.direction !== 'NEUTRAL' && mtf.direction !== apexDirection && mtf.confidence >= 60;
   const validThreshold = isFallback ? 50 : 72;
   const strongThreshold = isFallback ? 78 : 86;
