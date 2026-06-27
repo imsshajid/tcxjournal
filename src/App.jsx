@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
-  AlertTriangle,
   ArrowUp,
   BarChart3,
   CalendarDays,
@@ -48,13 +47,12 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import Tesseract from 'tesseract.js';
+import { recognize } from 'tesseract.js';
 import readXlsxFile from 'read-excel-file/browser';
 import SignalGenerator from './SignalGenerator';
 import './style.css';
 
 const LS = 'tcxjournal.free.v3';
-const { recognize } = Tesseract;
 const USER_LS_PREFIX = 'tcxjournal.user.v1.';
 const cloudConfigured = [
   import.meta.env.VITE_FIREBASE_API_KEY,
@@ -1274,12 +1272,7 @@ function Importer({ onImport, settings, onReviewChange }) {
           setStatus(`${fileLabel} - reading screenshot...`);
           const text = await readImageText(file, mode, (message) => setStatus(`${fileLabel} - ${message}`));
           setStatus(`${fileLabel} - detecting trades...`);
-          let parsed = parseTradeText(text, mode);
-          if (!parsed.length) {
-            setStatus(`${fileLabel} - retrying enhanced screenshot OCR...`);
-            const enhancedText = await readBrowserImageText(file, (message) => setStatus(`${fileLabel} - ${message}`));
-            parsed = parseTradeText(`${text}\n${enhancedText}`, mode);
-          }
+          const parsed = parseTradeText(text, mode);
           if (!parsed.length) throw new Error('not-trade-image');
           allDrafts.push(...parsed);
         } else {
@@ -1307,17 +1300,10 @@ function Importer({ onImport, settings, onReviewChange }) {
     const next = { ...trade, [key]: value };
     if (key === 'openedAt') next.session = inferForexSession(value);
     if (key === 'result') next.income = '';
-    return updateOcrDraftAfterEdit(next, key);
+    return makeTrade(next);
   }));
   const saveDrafts = async () => {
     if (savingImport || !drafts.length) return;
-    const invalidIndex = drafts.findIndex((draft) => validateTradeForSave(draft).blocking.length);
-    if (invalidIndex !== -1) {
-      const issue = validateTradeForSave(drafts[invalidIndex]).blocking[0];
-      setActiveIndex(invalidIndex);
-      setStatus(`Fix trade ${invalidIndex + 1} before saving: ${issue}`);
-      return;
-    }
     setSavingImport(true);
     setStatus(`Saving ${drafts.length.toLocaleString()} reviewed trade${drafts.length === 1 ? '' : 's'}...`);
     await waitForPaint();
@@ -1342,20 +1328,6 @@ function Importer({ onImport, settings, onReviewChange }) {
     if (savingImport) return;
     localStorage.setItem(IMPORT_LATER_KEY, JSON.stringify(drafts));
     setStatus(`${drafts.length} trade(s) saved for later review.`);
-  };
-  const discardActive = () => {
-    if (savingImport || !drafts.length) return;
-    setDrafts((current) => current.filter((_, index) => index !== activeIndex));
-    setActiveIndex((index) => Math.max(0, Math.min(index, drafts.length - 2)));
-    setStatus('Detected trade discarded.');
-  };
-  const addManualDraft = () => {
-    if (savingImport) return;
-    const market = mode === 'CFD' ? 'CFD' : 'FTT';
-    const draft = createManualImportDraft(market);
-    setDrafts((current) => [...current, draft]);
-    setActiveIndex(drafts.length);
-    setStatus('Blank trade added for review.');
   };
   const activeDraft = drafts[Math.min(activeIndex, Math.max(0, drafts.length - 1))];
   const updateActive = (key, value) => activeDraft && updateDraft(activeDraft.id, key, value);
@@ -1398,24 +1370,18 @@ function Importer({ onImport, settings, onReviewChange }) {
           />
           <div className="reviewLayout">
             <div className="reviewQueue">
-              {drafts.slice(0, 120).map((trade, index) => {
-                const review = getDraftReview(trade);
-                const queueClass = ['queueItem', index === activeIndex ? 'active' : '', review.blocking.length ? 'needsFix' : review.warnings.length ? 'needsReview' : ''].filter(Boolean).join(' ');
-                return (
-                <button key={trade.id} className={queueClass} onClick={() => setActiveIndex(index)} disabled={savingImport}>
+              {drafts.slice(0, 120).map((trade, index) => (
+                <button key={trade.id} className={index === activeIndex ? 'queueItem active' : 'queueItem'} onClick={() => setActiveIndex(index)} disabled={savingImport}>
                   <b>{trade.asset}</b>
-                  <span>{review.blocking.length ? 'Fix required' : review.warnings.length ? 'Needs review' : `${trade.strategy} - ${trade.emotion}`}</span>
+                  <span>{trade.strategy} - {trade.emotion}</span>
                   <strong className={trade.profit >= 0 ? 'green' : 'red'}>{money(trade.profit)}</strong>
                 </button>
-                );
-              })}
+              ))}
               {drafts.length > 120 && <p className="status">Showing first 120 in the queue. Save all includes every detected trade.</p>}
             </div>
             <div className="reviewEditor">
               {activeDraft && <TradeFormFields draft={activeDraft} set={updateActive} />}
               <div className="reviewNav">
-                <button className="soft dangerText" onClick={discardActive} disabled={savingImport || !drafts.length}><X size={16} />Discard</button>
-                <button className="soft" onClick={addManualDraft} disabled={savingImport}><Plus size={16} />Add trade</button>
                 <button className="soft" onClick={() => setActiveIndex((i) => Math.max(0, i - 1))} disabled={savingImport}>Previous</button>
                 <button className="soft" onClick={() => setActiveIndex((i) => Math.min(drafts.length - 1, i + 1))} disabled={savingImport}>Next</button>
               </div>
@@ -1719,16 +1685,12 @@ function waitForPaint() {
   });
 }
 
-function Input({ label, value, onChange, type = 'text', hint = '', tone = '' }) {
-  return <label className={['field', tone ? `field-${tone}` : ''].filter(Boolean).join(' ')}><span>{label}</span><input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} />{hint && <FieldHint text={hint} />}</label>;
+function Input({ label, value, onChange, type = 'text' }) {
+  return <label className="field"><span>{label}</span><input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} /></label>;
 }
 
-function Select({ label, value, onChange, options, hint = '', tone = '' }) {
-  return <label className={['field', tone ? `field-${tone}` : ''].filter(Boolean).join(' ')}><span>{label}</span><select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select>{hint && <FieldHint text={hint} />}</label>;
-}
-
-function FieldHint({ text }) {
-  return <small className="fieldHint">{text}</small>;
+function Select({ label, value, onChange, options }) {
+  return <label className="field"><span>{label}</span><select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select></label>;
 }
 
 function OptionalSelect({ label, value, onChange, options }) {
@@ -1743,7 +1705,7 @@ function OptionalSelect({ label, value, onChange, options }) {
   );
 }
 
-function AssetSelect({ value, onChange, market, hint = '', tone = '' }) {
+function AssetSelect({ value, onChange, market }) {
   const options = assetOptionsForMarket(market);
   const normalizedValue = normalizeAsset(value);
   const allOptions = options.includes(normalizedValue) || !normalizedValue ? options : [normalizedValue, ...options];
@@ -1771,7 +1733,7 @@ function AssetSelect({ value, onChange, market, hint = '', tone = '' }) {
   };
 
   return (
-    <label className={['field assetSelect', tone ? `field-${tone}` : ''].filter(Boolean).join(' ')} ref={boxRef}>
+    <label className="field assetSelect" ref={boxRef}>
       <span>Asset</span>
       <div className="assetCombobox">
         <input
@@ -1812,7 +1774,6 @@ function AssetSelect({ value, onChange, market, hint = '', tone = '' }) {
           </div>
         )}
       </div>
-      {hint && <FieldHint text={hint} />}
     </label>
   );
 }
@@ -1958,40 +1919,11 @@ function DayTradesModal({ date, trades, onClose, onOpenTrade, onEditGroup }) {
   );
 }
 
-function OcrReviewSummary({ draft, review }) {
-  if (!draft.ocr && !review.blocking.length && !review.warnings.length) return null;
-  const confidence = draft.ocr?.confidence ?? review.confidence;
-  const label = review.blocking.length ? 'Fix required' : review.warnings.length ? 'Review suggested' : `${confidenceLabel(confidence)} confidence`;
-  const messages = [...review.blocking, ...review.warnings].slice(0, 5);
-  return (
-    <div className={review.blocking.length ? 'ocrReviewMeta needsFix' : review.warnings.length ? 'ocrReviewMeta needsReview' : 'ocrReviewMeta'}>
-      <div>
-        <AlertTriangle size={17} />
-        <b>{label}</b>
-        <span>{draft.ocr?.source || 'OCR import'}{Number.isFinite(confidence) ? ` - ${Math.round(confidence * 100)}%` : ''}</span>
-      </div>
-      {!!messages.length && (
-        <ul>
-          {messages.map((message) => <li key={message}>{message}</li>)}
-        </ul>
-      )}
-      {import.meta.env.DEV && draft.ocr?.rawText && (
-        <details className="ocrDebug">
-          <summary>OCR debug</summary>
-          <pre>{draft.ocr.rawText}</pre>
-        </details>
-      )}
-    </div>
-  );
-}
-
 function TradeFormFields({ draft, set }) {
   const isFtt = draft.market === 'FTT';
   const previewTrade = makeTrade(draft);
-  const review = getDraftReview(draft);
   return (
     <div className="form">
-      <OcrReviewSummary draft={draft} review={review} />
       <div className="directionChooser">
         <span>Direction</span>
         <div className="twoBtns">
@@ -2009,17 +1941,17 @@ function TradeFormFields({ draft, set }) {
         <b className={previewTrade.profit >= 0 ? 'green' : 'red'}>{money(previewTrade.profit)}</b>
       </div>
       <div className="fields">
-        <AssetSelect value={draft.asset} market={draft.market} onChange={(v) => set('asset', v)} hint={fieldReviewHint(review, 'asset')} tone={fieldReviewTone(review, 'asset')} />
-        <Input label="Open time" type="datetime-local" value={inputDateTime(draft.openedAt)} onChange={(v) => set('openedAt', v)} hint={fieldReviewHint(review, 'openedAt')} tone={fieldReviewTone(review, 'openedAt')} />
-        <Input label="Close time" type="datetime-local" value={inputDateTime(draft.closedAt)} onChange={(v) => set('closedAt', v)} hint={fieldReviewHint(review, 'closedAt')} tone={fieldReviewTone(review, 'closedAt')} />
-        <Input label={isFtt ? 'Amount ($)' : 'Lot'} type="number" value={draft.amount} onChange={(v) => set('amount', v)} hint={fieldReviewHint(review, 'amount')} tone={fieldReviewTone(review, 'amount')} />
+        <AssetSelect value={draft.asset} market={draft.market} onChange={(v) => set('asset', v)} />
+        <Input label="Open time" type="datetime-local" value={inputDateTime(draft.openedAt)} onChange={(v) => set('openedAt', v)} />
+        <Input label="Close time" type="datetime-local" value={inputDateTime(draft.closedAt)} onChange={(v) => set('closedAt', v)} />
+        <Input label={isFtt ? 'Amount ($)' : 'Lot'} type="number" value={draft.amount} onChange={(v) => set('amount', v)} />
         {isFtt ? (
-          <Input label="Payout %" type="number" value={draft.payout} onChange={(v) => set('payout', v)} hint={fieldReviewHint(review, 'payout')} tone={fieldReviewTone(review, 'payout')} />
+          <Input label="Payout %" type="number" value={draft.payout} onChange={(v) => set('payout', v)} />
         ) : (
-          <Input label="P/L" type="number" value={draft.profit} onChange={(v) => set('profit', v)} hint={fieldReviewHint(review, 'profit')} tone={fieldReviewTone(review, 'profit')} />
+          <Input label="P/L" type="number" value={draft.profit} onChange={(v) => set('profit', v)} />
         )}
-        <Input label="Entry price" value={draft.open} onChange={(v) => set('open', v)} hint={fieldReviewHint(review, 'open')} tone={fieldReviewTone(review, 'open')} />
-        <Input label="Exit price" value={draft.close} onChange={(v) => set('close', v)} hint={fieldReviewHint(review, 'close')} tone={fieldReviewTone(review, 'close')} />
+        <Input label="Entry price" value={draft.open} onChange={(v) => set('open', v)} />
+        <Input label="Exit price" value={draft.close} onChange={(v) => set('close', v)} />
         <Select label="Strategy" value={draft.strategy} onChange={(v) => set('strategy', v)} options={STRATEGIES} />
         {isFtt && <Select label="Timeframe" value={draft.duration || '1m'} onChange={(v) => set('duration', v)} options={TIMEFRAMES.includes(draft.duration) || !draft.duration ? TIMEFRAMES : [draft.duration, ...TIMEFRAMES]} />}
         <Select label="Session" value={normalizeSession(draft.session, draft.openedAt)} onChange={(v) => set('session', v)} options={SESSION_OPTIONS} />
@@ -2133,11 +2065,9 @@ function mapCfdRow(row) {
 }
 
 async function readImageText(file, mode, setStatus) {
-  const browserText = await readBrowserImageText(file, setStatus);
-  if (browserText.trim() || mode !== 'AUTO') return browserText;
   if (mode === 'AUTO') {
     try {
-      setStatus('Browser OCR returned no text. Trying cloud OCR...');
+      setStatus('Reading screenshot with cloud OCR...');
       const cloud = await callCloudOcr(file);
       if (cloud) {
         setStatus('Screenshot text extracted. Detecting trades...');
@@ -2147,7 +2077,7 @@ async function readImageText(file, mode, setStatus) {
       setStatus('Cloud OCR unavailable. Running browser OCR...');
     }
   }
-  return browserText;
+  return readBrowserImageText(file, setStatus);
 }
 
 async function readBrowserImageText(file, setStatus) {
@@ -2155,16 +2085,15 @@ async function readBrowserImageText(file, setStatus) {
   const variants = await prepareImageVariantsForOcr(file);
   const texts = [];
   for (const [index, variant] of variants.entries()) {
-    const label = variants.length > 1 ? ` ${variant.label || `pass ${index + 1}`}/${variants.length}` : '';
-    const result = await recognize(variant.image || variant, 'eng', {
+    const label = variants.length > 1 ? ` pass ${index + 1}/${variants.length}` : '';
+    const result = await recognize(variant, 'eng', {
       logger: (m) => {
         if (m.status && m.progress) setStatus(`${m.status}${label} ${Math.round(m.progress * 100)}%`);
       },
       workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
       corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core.wasm.js',
       langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-      tessedit_pageseg_mode: variant.psm || '6',
-      ...(variant.whitelist ? { tessedit_char_whitelist: variant.whitelist } : {}),
+      tessedit_pageseg_mode: '6',
     });
     if (result.data.text?.trim()) texts.push(result.data.text);
   }
@@ -2172,97 +2101,48 @@ async function readBrowserImageText(file, setStatus) {
 }
 
 async function prepareImageVariantsForOcr(file) {
-  if (!file.type?.startsWith('image/') || typeof createImageBitmap !== 'function') return [{ image: file, label: 'original' }];
+  if (!file.type?.startsWith('image/') || typeof createImageBitmap !== 'function') return [file];
   try {
     const bitmap = await createImageBitmap(file);
     const shortImage = bitmap.height < 180;
     const wideTable = bitmap.width > 1200;
     const scale = shortImage ? Math.min(8, Math.max(3, Math.ceil(320 / bitmap.height))) : wideTable ? 2 : 3;
-    const variants = [
-      { image: await renderOcrVariant(bitmap, scale, 'normalize'), label: 'full text', psm: '6' },
-      { image: file, label: 'original', psm: '6' },
-      { image: await renderOcrVariant(bitmap, scale, 'threshold'), label: 'threshold', psm: '6' },
-    ];
-    if (!shortImage && bitmap.width > 520 && bitmap.height > 300) {
-      variants.push(
-        { image: await renderOcrVariant(bitmap, Math.min(scale, 2.6), 'normalize', { x: 0.02, y: 0.02, width: 0.96, height: 0.96 }), label: 'content', psm: '6' },
-        { image: await renderOcrVariant(bitmap, Math.min(scale, 2.4), 'threshold', { x: 0.52, y: 0, width: 0.46, height: 1 }), label: 'numbers', psm: '6', whitelist: '0123456789.,:/-%$+ USDusdAPMapm' },
-      );
-    }
-    return variants.filter((variant) => variant.image);
+    const normalized = await renderOcrVariant(bitmap, scale, 'normalize');
+    return [normalized || file];
   } catch {
-    return [{ image: file, label: 'original' }];
+    return [file];
   }
 }
 
-async function renderOcrVariant(bitmap, scale, mode, crop = { x: 0, y: 0, width: 1, height: 1 }) {
+async function renderOcrVariant(bitmap, scale, mode) {
   const canvas = document.createElement('canvas');
-  const sx = Math.max(0, Math.round(bitmap.width * crop.x));
-  const sy = Math.max(0, Math.round(bitmap.height * crop.y));
-  const sw = Math.max(1, Math.round(bitmap.width * crop.width));
-  const sh = Math.max(1, Math.round(bitmap.height * crop.height));
-  canvas.width = Math.round(sw * scale);
-  canvas.height = Math.round(sh * scale);
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return null;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
   let min = 255;
   let max = 0;
-  let total = 0;
-  const histogram = new Uint32Array(256);
   const grayValues = new Uint8Array(image.data.length / 4);
   for (let i = 0, pixel = 0; i < image.data.length; i += 4, pixel += 1) {
     const gray = Math.round(image.data[i] * 0.299 + image.data[i + 1] * 0.587 + image.data[i + 2] * 0.114);
     grayValues[pixel] = gray;
     min = Math.min(min, gray);
     max = Math.max(max, gray);
-    total += gray;
-    histogram[gray] += 1;
   }
   const range = Math.max(1, max - min);
-  const threshold = otsuThreshold(histogram, grayValues.length);
-  const darkMode = total / Math.max(1, grayValues.length) < 128;
   for (let i = 0, pixel = 0; i < image.data.length; i += 4, pixel += 1) {
     let gray = Math.round((grayValues[pixel] - min) / range * 255);
-    if (mode === 'threshold') {
-      const original = grayValues[pixel];
-      gray = darkMode ? (original < threshold ? 255 : 0) : (original < threshold ? 0 : 255);
-    } else if (darkMode) {
-      gray = 255 - gray;
-    }
+    if (mode === 'threshold') gray = gray < 145 ? 0 : 255;
     image.data[i] = gray;
     image.data[i + 1] = gray;
     image.data[i + 2] = gray;
   }
   ctx.putImageData(image, 0, 0);
   return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), 'image/png'));
-}
-
-function otsuThreshold(histogram, total) {
-  let sum = 0;
-  for (let i = 0; i < 256; i += 1) sum += i * histogram[i];
-  let sumB = 0;
-  let wB = 0;
-  let maxVariance = 0;
-  let threshold = 145;
-  for (let i = 0; i < 256; i += 1) {
-    wB += histogram[i];
-    if (!wB) continue;
-    const wF = total - wB;
-    if (!wF) break;
-    sumB += i * histogram[i];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const variance = wB * wF * (mB - mF) ** 2;
-    if (variance > maxVariance) {
-      maxVariance = variance;
-      threshold = i;
-    }
-  }
-  return threshold;
 }
 
 async function callCloudOcr(file) {
@@ -2278,15 +2158,14 @@ async function callCloudOcr(file) {
 }
 
 function parseTradeText(text, forced = 'AUTO') {
-  const cleanText = normalizeOcrText(text).replace(/\r/g, '\n');
+  const cleanText = String(text || '').replace(/\r/g, '\n');
   const lines = cleanText.split('\n').map((line) => line.trim()).filter(Boolean);
   const trades = [];
   const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   const ticket = /\b\d{8,12}\b/;
-  const allowFtt = forced !== 'CFD' && (forced === 'FTT' || hasFttEvidence(cleanText) || !hasCfdEvidence(cleanText));
-  const allowCfd = forced !== 'FTT' && (forced === 'CFD' || hasCfdEvidence(cleanText) || !hasFttEvidence(cleanText));
 
-  if (allowFtt) {
+  if (forced !== 'CFD') {
+    parseQuotexFttRows(cleanText, uuid).forEach((trade) => trades.push(trade));
     const detailTrade = parseFttDetailText(cleanText, uuid);
     if (detailTrade) trades.push(detailTrade);
     const fttBlocks = buildFttBlocks(lines, uuid);
@@ -2296,7 +2175,7 @@ function parseTradeText(text, forced = 'AUTO') {
     });
   }
 
-  if (allowCfd) {
+  if (forced !== 'FTT') {
     buildCfdBlocks(lines, ticket).forEach((block) => {
       const trade = parseCfdTextBlock(block, ticket);
       if (trade) trades.push(trade);
@@ -2315,264 +2194,6 @@ function parseTradeText(text, forced = 'AUTO') {
   });
 }
 
-function normalizeOcrText(text) {
-  return String(text || '')
-    .replace(/\u00a0/g, ' ')
-    .replace(/[\u2212\u2013\u2014]/g, '-')
-    .replace(/[|]/g, '1')
-    .replace(/(?<=\d)[oO](?=\d)/g, '0')
-    .replace(/\b([A-Z]{3})\s*[/\\]?\s*([A-Z]{3})\b/g, (_, left, right) => `${left}/${right}`)
-    .replace(/\bXAU\/US[SO0]\b/gi, 'XAU/USD')
-    .replace(/\bXAG\/US[SO0]\b/gi, 'XAG/USD')
-    .replace(/\bUS[BO0P]\//gi, 'USD/')
-    .replace(/\/[I1L]?PY\b/gi, '/JPY')
-    .replace(/\b([A-Z]{3})\s+([A-Z]{3})\b/g, '$1/$2');
-}
-
-function hasFttEvidence(text) {
-  const source = String(text || '');
-  const hasUuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(source);
-  const hasPayout = /(^|[^\d.])(?:[5-9]\d|100)\s*%/.test(source);
-  const hasQuoteLabels = /Opening\s+quote|Closing\s+quote|Trade\s+Pair|Difference|Duration/i.test(source);
-  const hasFttId = /\bID:?\s*[0-9a-f-]{8,}/i.test(source);
-  return hasUuid || (hasPayout && !/\blot\b/i.test(source)) || (hasQuoteLabels && (hasPayout || hasFttId || /Trade\s+Pair/i.test(source)));
-}
-
-function hasCfdEvidence(text) {
-  return /\b(?:Buy|Sell)\s+\d+(?:[.,]\d+)?\s*lot\b|\blot\s+at\b|Open\s+price|Close\s+price|P\/L|Commission|Equity|Closed\s+by|Stop\s*out|Stop\s*loss|\bSO\b|\bSL\b/i.test(String(text || ''));
-}
-
-function createOcrDraft(input, evidence = {}) {
-  const raw = { ...input };
-  const trade = makeTrade(raw);
-  if (!hasInputValue(raw.asset)) trade.asset = '';
-  if (!hasInputValue(raw.amount)) trade.amount = '';
-  if (!hasInputValue(raw.openedAt)) trade.openedAt = '';
-  if (!hasInputValue(raw.closedAt)) trade.closedAt = '';
-  if (!hasInputValue(raw.open)) trade.open = '';
-  if (!hasInputValue(raw.close)) trade.close = '';
-  if (trade.market === 'FTT') {
-    if (!hasInputValue(raw.payout)) trade.payout = '';
-    if (!hasInputValue(raw.income) && !hasInputValue(raw.resultAmount)) {
-      trade.income = '';
-      trade.profit = '';
-    }
-  } else if (!hasInputValue(raw.profit)) {
-    trade.profit = '';
-  }
-  const report = validateOcrTradeDraft(trade, { raw, evidence });
-  const fieldConfidence = buildFieldConfidence(trade, report, raw);
-  const confidence = calculateOcrConfidence(report, fieldConfidence);
-  return {
-    ...trade,
-    ocr: {
-      source: evidence.source || 'OCR screenshot',
-      confidence,
-      fieldConfidence,
-      fieldWarnings: report.fieldWarnings,
-      fieldSeverity: report.fieldSeverity,
-      warnings: report.warnings,
-      blocking: report.blocking,
-      rawText: clean(evidence.rawText || evidence.block || '').slice(0, 2500),
-      reviewed: false,
-    },
-  };
-}
-
-function updateOcrDraftAfterEdit(draft, key) {
-  const normalized = makeTrade(draft);
-  if (!hasInputValue(draft.openedAt)) normalized.openedAt = '';
-  if (!hasInputValue(draft.closedAt)) normalized.closedAt = '';
-  if (!hasInputValue(draft.amount)) normalized.amount = '';
-  if (!hasInputValue(draft.open)) normalized.open = '';
-  if (!hasInputValue(draft.close)) normalized.close = '';
-  if (normalized.market === 'FTT') {
-    if (!hasInputValue(draft.payout)) normalized.payout = '';
-    if (!hasInputValue(draft.income) && !['result', 'amount', 'payout'].includes(key)) {
-      normalized.income = '';
-      normalized.profit = '';
-    }
-  } else if (!hasInputValue(draft.profit)) {
-    normalized.profit = '';
-  }
-  const report = validateOcrTradeDraft(normalized);
-  const previous = draft.ocr || {};
-  const fieldConfidence = {
-    ...(previous.fieldConfidence || {}),
-    [key]: 'high',
-  };
-  const confidence = Math.max(previous.confidence || 0, calculateOcrConfidence(report, fieldConfidence));
-  return {
-    ...normalized,
-    ocr: {
-      ...previous,
-      confidence,
-      fieldConfidence,
-      fieldWarnings: report.fieldWarnings,
-      fieldSeverity: report.fieldSeverity,
-      warnings: report.warnings,
-      blocking: report.blocking,
-      reviewed: true,
-    },
-  };
-}
-
-function createManualImportDraft(market = 'FTT') {
-  const base = makeTrade({
-    market,
-    account: market === 'FTT' ? 'Quotex' : 'MT5',
-    asset: assetOptionsForMarket(market)[0],
-    direction: market === 'FTT' ? 'UP' : 'BUY',
-    amount: market === 'FTT' ? 10 : 0.01,
-    payout: market === 'FTT' ? 90 : '',
-    result: 'WIN',
-    profit: market === 'CFD' ? 1 : undefined,
-    openedAt: new Date().toISOString(),
-    closedAt: new Date().toISOString(),
-    strategy: 'Unclassified',
-    emotion: 'Neutral',
-    notes: 'Added during import review.',
-  });
-  return {
-    ...base,
-    ocr: {
-      source: 'Manual import review',
-      confidence: 1,
-      fieldConfidence: {},
-      fieldWarnings: {},
-      fieldSeverity: {},
-      warnings: [],
-      blocking: [],
-      rawText: '',
-      reviewed: true,
-    },
-  };
-}
-
-function getDraftReview(draft) {
-  const report = validateOcrTradeDraft(draft);
-  const lowConfidence = draft.ocr?.confidence && draft.ocr.confidence < 0.72 && !report.blocking.length
-    ? ['Low OCR confidence. Verify the highlighted values before saving.']
-    : [];
-  return {
-    ...report,
-    warnings: uniqueStrings([...lowConfidence, ...report.warnings]),
-    confidence: draft.ocr?.confidence ?? calculateOcrConfidence(report, draft.ocr?.fieldConfidence || {}),
-  };
-}
-
-function validateTradeForSave(draft) {
-  return validateOcrTradeDraft(draft);
-}
-
-function validateOcrTradeDraft(trade, context = {}) {
-  const report = { blocking: [], warnings: [], fieldWarnings: {}, fieldSeverity: {} };
-  const add = (field, message, blocking = false) => {
-    const bucket = blocking ? report.blocking : report.warnings;
-    if (!bucket.includes(message)) bucket.push(message);
-    if (field) {
-      report.fieldWarnings[field] = report.fieldWarnings[field] || [];
-      if (!report.fieldWarnings[field].includes(message)) report.fieldWarnings[field].push(message);
-      if (blocking || report.fieldSeverity[field] !== 'error') report.fieldSeverity[field] = blocking ? 'error' : 'warning';
-    }
-  };
-  const market = trade.market === 'CFD' ? 'CFD' : 'FTT';
-  const rawText = context.evidence?.block || context.evidence?.rawText || '';
-  if (market === 'FTT' && hasCfdEvidence(rawText) && !hasFttEvidence(rawText)) {
-    add('asset', 'This looks like a CFD trade, not an FTT trade. Review or discard it.', true);
-  }
-  if (!isPlausibleAsset(trade.asset, market)) add('asset', 'Asset was not read as a valid trading symbol.', true);
-  const direction = normalizeDirection(trade.direction);
-  if (market === 'FTT' && !['UP', 'DOWN'].includes(direction)) add('direction', 'Direction must be Up or Down.', true);
-  if (market === 'CFD' && !['BUY', 'SELL'].includes(direction)) add('direction', 'Direction must be Buy or Sell.', true);
-
-  const opened = parseTradeDate(trade.openedAt);
-  const closed = parseTradeDate(trade.closedAt);
-  if (Number.isNaN(opened.getTime())) add('openedAt', 'Open time was not visible or could not be read.', true);
-  if (Number.isNaN(closed.getTime())) add('closedAt', 'Close time was not visible or could not be read.', true);
-  if (!Number.isNaN(opened.getTime()) && !Number.isNaN(closed.getTime())) {
-    const duration = closed - opened;
-    if (duration < 0) add('closedAt', 'Close time is before open time.', true);
-    if (market === 'FTT' && duration > 24 * 60 * 60 * 1000) add('closedAt', 'FTT duration is too long for a normal timed trade.', true);
-    if (market === 'FTT' && duration > 2 * 60 * 60 * 1000) add('closedAt', 'FTT duration is unusually long. Verify the date and time.');
-  }
-
-  const amount = toNumber(trade.amount);
-  if (!(amount > 0)) add('amount', market === 'CFD' ? 'Lot size must be greater than zero.' : 'Trade amount must be greater than zero.', true);
-  if (market === 'CFD' && amount > 100) add('amount', 'Lot size is unrealistically large for an imported CFD row.', true);
-  if (market === 'FTT' && amount > 100000) add('amount', 'Trade amount is unusually large. Verify this value.');
-
-  const openPrice = toNumber(trade.open);
-  const closePrice = toNumber(trade.close);
-  if (hasInputValue(trade.open) && !(openPrice > 0)) add('open', 'Entry price is not a valid positive number.', true);
-  if (hasInputValue(trade.close) && !(closePrice > 0)) add('close', 'Exit price is not a valid positive number.', true);
-  if (openPrice > 0 && closePrice > 0 && Math.abs(closePrice - openPrice) / openPrice > 0.35) {
-    add('close', 'Entry and exit prices are far apart. Verify decimal placement.');
-  }
-
-  if (market === 'FTT') {
-    const payout = toNumber(trade.payout);
-    if (!(payout > 0)) add('payout', 'Payout percentage was not visible. Enter it before saving.', true);
-    else if (payout < 50 || payout > 100) add('payout', 'Payout percentage must be between 50 and 100.', true);
-    const incomeVisible = hasInputValue(trade.income);
-    const income = toNumber(trade.income);
-    if (!incomeVisible) add('result', 'Result amount was not visible. Choose Profit, Loss, or Refund to derive it.', true);
-    if (income < 0) add('result', 'FTT returned amount cannot be negative.', true);
-    if (amount > 0 && payout >= 50 && payout <= 100 && income > amount) {
-      const expected = amount + (amount * payout / 100);
-      const gap = Math.abs(income - expected);
-      if (gap > Math.max(1, amount * 0.08)) add('payout', 'Amount, payout, and returned amount do not match.', true);
-    }
-  } else {
-    if (!hasInputValue(trade.profit)) add('profit', 'P/L was not visible. Enter the exact CFD result before saving.', true);
-    const profit = toNumber(trade.profit);
-    if (Math.abs(profit) > 1000000) add('profit', 'P/L is unrealistically large. Verify decimal placement.', true);
-  }
-  return report;
-}
-
-function buildFieldConfidence(trade, report, raw = {}) {
-  const keys = ['asset', 'direction', 'openedAt', 'closedAt', 'amount', 'payout', 'profit', 'open', 'close'];
-  return keys.reduce((acc, key) => {
-    if (report.fieldSeverity[key] === 'error') acc[key] = 'low';
-    else if (report.fieldSeverity[key] === 'warning') acc[key] = 'medium';
-    else if (!hasInputValue(raw[key]) && ['asset', 'openedAt', 'closedAt', 'amount'].includes(key)) acc[key] = 'low';
-    else acc[key] = 'high';
-    return acc;
-  }, {});
-}
-
-function calculateOcrConfidence(report, fieldConfidence = {}) {
-  const low = Object.values(fieldConfidence).filter((value) => value === 'low').length;
-  const medium = Object.values(fieldConfidence).filter((value) => value === 'medium').length;
-  const score = 0.94 - report.blocking.length * 0.18 - report.warnings.length * 0.06 - low * 0.05 - medium * 0.025;
-  return Math.max(0.05, Math.min(0.99, score));
-}
-
-function confidenceLabel(value) {
-  if (value >= 0.86) return 'High';
-  if (value >= 0.68) return 'Medium';
-  return 'Low';
-}
-
-function fieldReviewHint(review, field) {
-  const message = review.fieldWarnings?.[field]?.[0];
-  if (message) return message;
-  return '';
-}
-
-function fieldReviewTone(review, field) {
-  return review.fieldSeverity?.[field] === 'error' ? 'error' : review.fieldSeverity?.[field] === 'warning' ? 'warning' : '';
-}
-
-function hasInputValue(value) {
-  return value !== undefined && value !== null && String(value).trim() !== '';
-}
-
-function uniqueStrings(values) {
-  return [...new Set(values.filter(Boolean))];
-}
-
 function tradeFallbackKey(trade) {
   return [
     trade.market,
@@ -2585,6 +2206,85 @@ function tradeFallbackKey(trade) {
     round(trade.open),
     round(trade.close),
   ].join('|').toLowerCase();
+}
+
+function parseQuotexFttRows(text, uuid) {
+  const source = normalizeTradeOcrText(text);
+  const headerPattern = /([A-Z0-9]{3}\s*[/|]?\s*[A-Z0-9]{2,3}(?:\s*\(OTC\))?)\s+([5-9]\d|100)\s*%/gi;
+  const headers = [...source.matchAll(headerPattern)]
+    .map((match) => ({
+      index: match.index,
+      asset: normalizeOcrAsset(match[1]),
+      payout: toNumber(match[2]),
+    }))
+    .filter((header) => /^[A-Z0-9]{3}\/[A-Z0-9]{3}/.test(header.asset) || /\(OTC\)/i.test(header.asset));
+
+  return headers.map((header, index) => {
+    const block = source.slice(header.index, headers[index + 1]?.index ?? source.length);
+    return parseQuotexFttRowBlock(block, header, uuid);
+  }).filter(Boolean);
+}
+
+function parseQuotexFttRowBlock(block, header, uuid) {
+  if (/\b(Buy|Sell)\b|\blot\b|Open price|Close price|P\/L|Commission|Equity|Closed by|Stop\s*out/i.test(block)) return null;
+  const idMatch = block.match(uuid);
+  const id = idMatch?.[0] || '';
+  const beforeId = idMatch ? block.slice(0, idMatch.index) : block.slice(0, 180);
+  let moneyValues = extractQuotexMoneyValues(beforeId);
+  if (moneyValues.length < 2) moneyValues = extractFttMoneyValues(block, id);
+  if (!moneyValues.length) return null;
+
+  const quotes = extractFttQuotes(block);
+  const dates = parseVisibleDates(block);
+  const amount = round(Math.abs(moneyValues[0]));
+  const income = moneyValues.length > 1
+    ? round(Math.max(0, moneyValues[1]))
+    : inferFttIncomeFromBlock(block, amount);
+
+  return makeTrade({
+    market: 'FTT',
+    sourceId: id,
+    account: 'Quotex',
+    asset: header.asset,
+    direction: inferFttDirection(block, quotes.open, quotes.close, income - amount),
+    amount,
+    income,
+    payout: header.payout,
+    open: quotes.open,
+    close: quotes.close,
+    openedAt: quotes.openedAt || dates[0] || new Date().toISOString(),
+    closedAt: quotes.closedAt || dates[1] || dates[0] || new Date().toISOString(),
+    strategy: 'Unclassified',
+    notes: 'Imported from Quotex screenshot row.',
+  });
+}
+
+function normalizeTradeOcrText(text) {
+  return String(text || '')
+    .replace(/\r/g, '\n')
+    .replace(/[|]/g, '/')
+    .replace(/\bUS[DO0P]\s*\/?\s*J[P¥Y]\b/gi, 'USD/JPY')
+    .replace(/\bA[UO0]D\s*\/?\s*J[P¥Y]\b/gi, 'AUD/JPY')
+    .replace(/\b([A-Z]{3})\s+([A-Z]{3})\b(?=\s+(?:[5-9]\d|100)\s*%)/g, '$1/$2')
+    .replace(/([0-9])\s*[$S]\b/gi, '$1$')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractQuotexMoneyValues(text) {
+  const values = [];
+  const source = String(text || '').replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, ' ');
+  const patterns = [
+    /([+-]?\s*\$)\s*(\d{1,6}(?:[.,]\d{1,2})?)/g,
+    /([+-]?\s*\d{1,6}(?:[.,]\d{1,2})?)\s*(?:[$S]|USD)(?![A-Za-z])/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const value = toNumber(match[2] || match[1]);
+      if (Number.isFinite(value) && value >= 0 && value < 100000) values.push(value);
+    }
+  }
+  return values.slice(-2);
 }
 
 function buildFttBlocks(lines, uuid) {
@@ -2615,7 +2315,6 @@ function findFttBlockStart(lines, idLine, lowerBound) {
 
 function parseFttTextBlock(block, uuid) {
   if (/\b(Buy|Sell)\b|\blot\b|Open price|Close price|P\/L|Commission|Equity|Closed by|Stop\s*out/i.test(block)) return null;
-  if (!hasFttEvidence(block)) return null;
   const asset = block.match(/[A-Z0-9]{3}\s*\/\s*[A-Z0-9]{2,3}(?:\s*\(OTC\))?|XAU\s*\/?\s*USD(?:\s*\(OTC\))?|XAG\s*\/?\s*USD(?:\s*\(OTC\))?/i);
   const id = block.match(uuid);
   const pct = extractFttPayout(block);
@@ -2624,9 +2323,8 @@ function parseFttTextBlock(block, uuid) {
   const quotes = extractFttQuotes(block);
   const dates = parseVisibleDates(block);
   const amount = values[0];
-  const hasVisibleZeroIncome = /\b0[.,]0{1,2}[8S$%]?\b/.test(block);
-  const income = values.length > 1 ? values[values.length - 1] : hasVisibleZeroIncome ? 0 : '';
-  return createOcrDraft({
+  const income = values.length > 1 ? values[values.length - 1] : inferFttIncomeFromBlock(block, values[0]);
+  return makeTrade({
     market: 'FTT',
     sourceId: id?.[0],
     account: 'Quotex',
@@ -2637,14 +2335,10 @@ function parseFttTextBlock(block, uuid) {
     payout: pct,
     open: quotes.open,
     close: quotes.close,
-    openedAt: quotes.openedAt || dates[0] || '',
-    closedAt: quotes.closedAt || dates[1] || dates[0] || '',
+    openedAt: quotes.openedAt || dates[0] || new Date().toISOString(),
+    closedAt: quotes.closedAt || dates[1] || dates[0] || new Date().toISOString(),
     strategy: 'Unclassified',
     notes: 'Imported from screenshot.',
-  }, {
-    source: 'Quotex FTT screenshot',
-    rawText: block,
-    block,
   });
 }
 
@@ -2662,7 +2356,7 @@ function parseFttDetailText(text, uuid) {
   const id = compact.match(uuid)?.[0] || compact.match(/\bID:?\s*([0-9a-f-]{8,})/i)?.[1] || '';
   const duration = compact.match(/Duration:?\s*(\d{1,2}:\d{2}:\d{2}|\d+\s*[smh])/i)?.[1] || '';
   const pct = compact.match(/([+-]?\d{1,3})\s*%/)?.[1];
-  return createOcrDraft({
+  return makeTrade({
     market: 'FTT',
     sourceId: id,
     account: 'Quotex',
@@ -2678,10 +2372,6 @@ function parseFttDetailText(text, uuid) {
     duration,
     strategy: 'Unclassified',
     notes: 'Imported from Quotex detail screenshot.',
-  }, {
-    source: 'Quotex FTT detail screenshot',
-    rawText: text,
-    block: compact,
   });
 }
 
@@ -2746,7 +2436,11 @@ function extractFttPayout(block) {
 }
 
 function parseOcrMoneyToken(token, symbol = '') {
-  const number = toNumber(token);
+  let text = String(token || '').replace(/\s+/g, '').replace(',', '.');
+  if (!text) return NaN;
+  const decimal = text.match(/^([+-]?\d+)\.(\d{3})$/);
+  if (decimal) text = `${decimal[1]}.${decimal[2].slice(0, 2)}`;
+  const number = Number(text);
   return Number.isFinite(number) ? number : NaN;
 }
 
@@ -2833,25 +2527,11 @@ function normalizeOcrAsset(value) {
   let text = clean(value).replace(/\s*\/\s*/, '/').toUpperCase();
   text = text
     .replace(/\bUS[BO0P]\//, 'USD/')
-    .replace(/\/US[SO0]\b/, '/USD')
     .replace(/\bUSD\/PY\b/, 'USD/JPY')
     .replace(/\/[I1L]PY\b/, '/JPY')
     .replace(/\/PY\b/, '/JPY')
     .replace(/\bA[UO0]D\//, 'AUD/');
   return normalizeAsset(text);
-}
-
-function isPlausibleAsset(value, market = 'FTT') {
-  const asset = normalizeOcrAsset(value);
-  if (!asset || /UNKNOWN|TRADE|^[^A-Z0-9]+$/i.test(asset)) return false;
-  const options = assetOptionsForMarket(market);
-  if (options.some((option) => option.toUpperCase() === asset.toUpperCase())) return true;
-  const upper = asset.toUpperCase();
-  if (/^[A-Z]{3}\/[A-Z]{3}(?:\s*\(OTC\))?$/.test(upper)) return true;
-  if (/^(XAU|XAG|BTC|ETH|LTC|XRP|BNB|SOL)\/USD(?:\s*\(OTC\))?$/.test(upper)) return true;
-  if (market === 'CFD' && /^(NAS100|US30|SPX500|GER40|UK100|JP225|HK50|USOIL|BRENT|NATGAS)$/.test(upper)) return true;
-  if (market === 'FTT' && /\b(OTC)\)$/i.test(asset) && /^[A-Z][A-Z0-9 /()_-]{3,40}$/i.test(asset)) return true;
-  return false;
 }
 
 function buildCfdBlocks(lines, ticket) {
@@ -2879,17 +2559,17 @@ function parseCfdTextBlock(block, ticket) {
   const profit = labeledCfdMoney(compact, ['P/L', 'Profit']) || compact.match(/([+-]\s*\d+(?:[.,]\d+)?)\s*(?:USD|\$)/i)?.[1] || '';
   if (!asset || (!side && !id) || profit === '') return null;
   const dates = parseVisibleDates(compact);
-  return createOcrDraft({
+  return makeTrade({
     market: 'CFD',
     sourceId: id?.[0],
     account: 'CFD',
-    asset: normalizeOcrAsset(slashSymbol(asset[0].replace(/\s*\/\s*/, '/'))),
+    asset: slashSymbol(asset[0].replace(/\s*\/\s*/, '/')),
     direction: side?.[1] || 'SELL',
     amount: lot?.[1] || '',
     open: openPrice,
     close: closePrice,
-    openedAt: labeledCfdDate(compact, 'Open time') || dates[0] || '',
-    closedAt: labeledCfdDate(compact, 'Close time') || dates[1] || dates[0] || '',
+    openedAt: labeledCfdDate(compact, 'Open time') || dates[0] || new Date().toISOString(),
+    closedAt: labeledCfdDate(compact, 'Close time') || dates[1] || dates[0] || new Date().toISOString(),
     profit,
     closeReason: /stop\s*out/i.test(compact) ? 'Stop out' : /stop\s*loss/i.test(compact) ? 'Stop loss' : '',
     commission: labeledCfdMoney(compact, ['Commission']),
@@ -2897,10 +2577,6 @@ function parseCfdTextBlock(block, ticket) {
     equity: labeledCfdMoney(compact, ['Equity']),
     strategy: 'Unclassified',
     notes: 'Imported from screenshot.',
-  }, {
-    source: 'CFD screenshot',
-    rawText: block,
-    block: compact,
   });
 }
 
@@ -2918,26 +2594,22 @@ function parseCfdTableRow(block, ticket) {
   const signed = [...block.matchAll(/[+-]\s*\d+(?:[.,]\d+)?/g)].map((match) => match[0]);
   const closeReasonProfit = block.match(/(?:stop\s*out|stop\s*loss|take\s*profit)\s+([+-]\s*\d+(?:[.,]\d+)?)/i)?.[1];
   const dates = parseVisibleDates(block);
-  return createOcrDraft({
+  return makeTrade({
     market: 'CFD',
     sourceId: id?.[0] || '',
     account: 'CFD',
-    asset: normalizeOcrAsset(slashSymbol(asset[0].replace(/\s*\/\s*/, '/'))),
+    asset: slashSymbol(asset[0].replace(/\s*\/\s*/, '/')),
     direction: side[1],
     amount: rowNumbers[0],
     open: rowNumbers[1],
     close: rowNumbers[2],
-    openedAt: dates[0] || '',
-    closedAt: dates[1] || dates[0] || '',
+    openedAt: dates[0] || new Date().toISOString(),
+    closedAt: dates[1] || dates[0] || new Date().toISOString(),
     profit: closeReasonProfit || signed.at(-1) || rowNumbers[3] || '',
     closeReason: /stop\s*out/i.test(block) ? 'Stop out' : /stop\s*loss/i.test(block) ? 'Stop loss' : '',
     commission: id && signed.length > 1 ? signed.at(-2) : '',
     strategy: 'Unclassified',
     notes: 'Imported from CFD row screenshot.',
-  }, {
-    source: 'CFD table screenshot',
-    rawText: block,
-    block,
   });
 }
 
@@ -3574,22 +3246,8 @@ function cleanNumber(value) {
 
 function toNumber(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  let cleaned = String(value ?? '')
-    .replace(/[\u2212\u2013\u2014]/g, '-')
-    .replace(/\s+/g, '')
-    .replace(/[^\d.,+-]/g, '');
-  if (!cleaned || cleaned === '-' || cleaned === '+') return 0;
-  const sign = cleaned.startsWith('-') ? '-' : '';
-  cleaned = cleaned.replace(/^[+-]/, '');
-  const separators = [...cleaned.matchAll(/[.,]/g)].map((match) => match.index);
-  if (separators.length > 1) {
-    const last = separators.at(-1);
-    cleaned = `${cleaned.slice(0, last).replace(/[.,]/g, '')}.${cleaned.slice(last + 1).replace(/[.,]/g, '')}`;
-  } else if (cleaned.includes(',')) {
-    const [left, right] = cleaned.split(',');
-    cleaned = right?.length === 3 && left.length <= 3 ? `${left}${right}` : `${left}.${right || ''}`;
-  }
-  const number = Number(`${sign}${cleaned}`);
+  const cleaned = String(value ?? '').replace(/,/g, '').replace(/[^\d.+-]/g, '');
+  const number = Number(cleaned);
   return Number.isFinite(number) ? number : 0;
 }
 
@@ -3707,9 +3365,4 @@ const tooltipStyle = {
   boxShadow: '0 18px 44px rgba(15, 23, 42, .16)',
 };
 
-if (typeof document !== 'undefined') {
-  const root = document.getElementById('root');
-  if (root) createRoot(root).render(<App />);
-}
-
-export { parseTradeText, validateTradeForSave, normalizeOcrText, toNumber };
+createRoot(document.getElementById('root')).render(<App />);
