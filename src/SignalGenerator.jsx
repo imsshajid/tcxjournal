@@ -39,6 +39,7 @@ export default function SignalGenerator() {
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [mtfRows, setMtfRows] = useState([]);
+  const [advancedAnalysis, setAdvancedAnalysis] = useState(false);
 
   const selected = useMemo(
     () => assets.find((item) => item.asset === selectedAsset) || assets[0],
@@ -89,7 +90,7 @@ export default function SignalGenerator() {
     try {
       const [apexOutcome, mtfOutcome] = await Promise.allSettled([
         fetchApexSignals({ asset, time: entryTime, timeframe }),
-        fetchMtf(asset),
+        fetchMtf(asset, { advanced: advancedAnalysis, timeframe }),
       ]);
 
       const rows = mtfOutcome.status === 'fulfilled' ? normalizeMtfRows(mtfOutcome.value) : [];
@@ -130,7 +131,7 @@ export default function SignalGenerator() {
         <div>
           <span className="miniCaps">TCX signal generator</span>
           <h2>OTC confluence desk</h2>
-          <p>Assets with at least {MIN_PAYOUT}% payout are eligible. Apex matches get priority; MTF can generate a lower-confidence fallback when the catalogue has no exact setup.</p>
+          <p>Assets with at least {MIN_PAYOUT}% payout are eligible. Apex confirms catalogue setups, while strong MTF and analyze-custom alignment can generate a SignalX-style setup when no catalogue match exists.</p>
         </div>
         <div className="signalHeroStats">
           <SignalStat icon={<ShieldCheck size={18} />} label="Payout floor" value={`${MIN_PAYOUT}%`} />
@@ -186,6 +187,16 @@ export default function SignalGenerator() {
             </label>
           </div>
 
+          <div className="signalToggleRow">
+            <span>Advanced analysis</span>
+            <button
+              type="button"
+              className={advancedAnalysis ? 'toggle on' : 'toggle'}
+              aria-pressed={advancedAnalysis}
+              onClick={() => setAdvancedAnalysis((current) => !current)}
+            />
+          </div>
+
           <button className="primary signalGenerate" disabled={!selected || generating || loadingAssets} onClick={generateSignal}>
             <Zap size={18} />
             <span>{generating ? 'Checking confluence...' : 'Generate signal'}</span>
@@ -196,7 +207,7 @@ export default function SignalGenerator() {
 
         <div className="signalOutput">
           <SignalResult result={result} selected={selected} time={time} timeframe={timeframe} generating={generating} />
-          <MtfMatrix rows={mtfRows} />
+          {advancedAnalysis && <MtfMatrix rows={mtfRows} />}
         </div>
       </div>
     </section>

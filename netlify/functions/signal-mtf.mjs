@@ -54,6 +54,14 @@ function safeJson(text) {
   }
 }
 
+function isEnabled(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function getTimeframes(payload) {
+  return payload?.timeframes || payload?.data?.timeframes || null;
+}
+
 export async function handler(event) {
   if (event.httpMethod !== 'GET') return json(405, { error: 'Method not allowed' });
 
@@ -62,13 +70,26 @@ export async function handler(event) {
 
   const broker = event.queryStringParameters?.broker || 'quotex';
   const asset = event.queryStringParameters?.asset || '';
+  const timeframe = String(event.queryStringParameters?.timeframe || 'M1').toUpperCase();
+  const advanced = isEnabled(event.queryStringParameters?.advanced);
   if (!asset) return json(400, { error: 'asset is required' });
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 18000);
+  const timer = setTimeout(() => controller.abort(), advanced ? 30000 : 12000);
 
   try {
-    const bridgeMtf = await fetchBridgeMtfAnalysis({ broker, asset, signal: controller.signal });
+    if (advanced) {
+      const directMtf = await fetchDirectMtfAnalysis({ base, broker, asset, signal: controller.signal });
+      const bridgeMtf = await fetchBridgeMtfAnalysis({
+        broker,
+        asset,
+        timeframes: [...new Set([timeframe, ...MTF_LADDER])],
+        signal: controller.signal,
+      });
+      if (directMtf || bridgeMtf) return json(200, mergeMtfPayloads({ directMtf, bridgeMtf }));
+    }
+
+    const bridgeMtf = await fetchBridgeMtfAnalysis({ broker, asset, timeframes: [timeframe], signal: controller.signal });
     if (bridgeMtf) return json(200, bridgeMtf);
 
     let lastStatus = 502;
@@ -114,12 +135,68 @@ export async function handler(event) {
   }
 }
 
-async function fetchBridgeMtfAnalysis({ broker, asset, signal }) {
+async function fetchDirectMtfAnalysis({ base, broker, asset, signal }) {
+  for (const target of mtfTargets(base, broker, asset)) {
+    try {
+      const response = await fetch(target.url, {
+        headers: {
+          accept: 'application/json',
+          ...(target.authorization ? { authorization: target.authorization } : {}),
+        },
+        signal,
+      });
+      const text = await response.text();
+      const parsed = safeJson(text);
+      if (response.ok && parsed && getTimeframes(parsed)) {
+        return {
+          ...parsed,
+          timeframes: getTimeframes(parsed),
+          source: parsed.source || 'direct-mtf-analysis',
+        };
+      }
+    } catch (error) {
+      if (error.name === 'AbortError') throw error;
+    }
+  }
+
+  return null;
+}
+
+function mergeMtfPayloads({ directMtf, bridgeMtf }) {
+  const directFrames = getTimeframes(directMtf);
+  const bridgeFrames = getTimeframes(bridgeMtf);
+
+  if (!directFrames && bridgeFrames) return bridgeMtf;
+  if (!directFrames) return {
+    timeframes: {},
+    source: 'mtf-unavailable',
+    degraded: true,
+  };
+
+  const mergedFrames = Object.fromEntries(Object.entries(directFrames).map(([tf, row]) => [
+    tf,
+    {
+      ...row,
+      bridge_confirmation: bridgeFrames?.[tf] || null,
+    },
+  ]));
+
+  return {
+    ...directMtf,
+    timeframes: mergedFrames,
+    bridge_timeframes: bridgeFrames || {},
+    source: bridgeFrames ? 'direct-mtf-analysis+infinity-bridge-analyze-custom' : directMtf.source,
+    degraded: !bridgeFrames,
+  };
+}
+
+async function fetchBridgeMtfAnalysis({ broker, asset, timeframes, signal }) {
   const root = bridgeBase();
   const authorization = bridgeAuthorization();
   if (!root || !authorization) return null;
 
-  const startedJobs = await Promise.all(MTF_LADDER.map(async (tf) => {
+  const selectedTimeframes = Array.isArray(timeframes) && timeframes.length ? timeframes : MTF_LADDER;
+  const startedJobs = await Promise.all(selectedTimeframes.map(async (tf) => {
     try {
       const startUrl = new URL(`/${broker}/analyze-custom`, root);
       const response = await fetch(startUrl, {
@@ -141,21 +218,21 @@ async function fetchBridgeMtfAnalysis({ broker, asset, signal }) {
   }));
 
   const rows = await Promise.all(startedJobs.filter(Boolean).map((job) => pollBridgeAnalysis({ ...job, root, broker, authorization, signal })));
-  const timeframes = rows.reduce((acc, row) => {
+  const timeframeRows = rows.reduce((acc, row) => {
     if (row) acc[row.tf] = row.raw;
     return acc;
   }, {});
 
-  return Object.keys(timeframes).length
-    ? { timeframes, source: 'infinity-bridge-analyze-custom', degraded: true }
+  return Object.keys(timeframeRows).length
+    ? { timeframes: timeframeRows, timeframe_order: selectedTimeframes, source: 'infinity-bridge-analyze-custom', degraded: true }
     : null;
 }
 
 async function pollBridgeAnalysis({ root, broker, tf, jobId, authorization, signal }) {
   const statusUrl = new URL(`/${broker}/analyze-status/${encodeURIComponent(jobId)}`, root);
 
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    if (attempt) await delay(700);
+  for (let attempt = 0; attempt < 18; attempt += 1) {
+    if (attempt) await delay(800);
     try {
       const response = await fetch(statusUrl, {
         headers: { accept: 'application/json', authorization },
