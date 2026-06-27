@@ -26,6 +26,7 @@
   --accent: #0f766e;
   --accent-2: #0e7490;
   --accent-text: #ecfeff;
+  --page-title-size: 1.55rem;
   --radius: 8px;
   --sidebar: 248px;
 }
@@ -209,7 +210,7 @@ main {
 
 .titleBlock h1, .formHead h2 {
   margin: 2px 0 0;
-  font-size: clamp(1.35rem, 2vw, 2rem);
+  font-size: var(--page-title-size);
   line-height: 1.1;
 }
 
@@ -956,6 +957,12 @@ main {
 .transactionsPage { max-width: 1500px; }
 .transactionHero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .65fr); gap: 18px; align-items: center; }
 .transactionHero h2 { margin: 4px 0; }
+.transactionHero h2,
+.signalHero h2,
+.signalResultTop h2 {
+  font-size: var(--page-title-size);
+  line-height: 1.1;
+}
 .transactionHero p { color: var(--muted); line-height: 1.5; }
 .transactionDrop { min-height: 140px; display: grid; place-content: center; justify-items: center; gap: 7px; border: 1px dashed rgba(94, 234, 212, .45); border-radius: var(--radius); background: rgba(15, 118, 110, .08); cursor: pointer; }
 .transactionDrop input { position: absolute; left: -9999px; }
@@ -1922,7 +1929,6 @@ body {
 
 .signalHero h2 {
   margin: 4px 0 6px;
-  font-size: clamp(1.5rem, 2.2vw, 2.35rem);
   letter-spacing: 0;
 }
 
@@ -2132,7 +2138,6 @@ body {
   align-items: center;
   gap: 10px;
   margin: 4px 0 0;
-  font-size: clamp(1.55rem, 2.1vw, 2.45rem);
   letter-spacing: 0;
 }
 

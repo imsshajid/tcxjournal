@@ -128,7 +128,7 @@ export async function fetchPayouts() {
 }
 
 export async function fetchMtf(asset) {
-  const response = await fetch(`/.netlify/functions/signal-mtf?broker=quotex&asset=${encodeURIComponent(signalAssetLabel(asset))}`, {
+  const response = await fetch(`/.netlify/functions/signal-mtf?broker=quotex&asset=${encodeURIComponent(compactSignalAsset(asset))}`, {
     headers: { accept: 'application/json' },
   });
   return readJsonOrThrow(response, 'MTF analysis');
@@ -172,17 +172,17 @@ export function normalizeMtfRows(payload) {
 function normalizeMtfRow(tf, raw) {
   if (!raw || typeof raw !== 'object') return null;
   const indicators = [
-    indicator('Last Candle', 'last', directionScore(raw.last_candle?.direction ?? raw.lastCandle ?? raw.last_candle), INDICATOR_WEIGHTS.last),
-    indicator('Last 5', 'recent', candleSequenceScore(raw.recent_candles || raw.last_5 || raw.last5), INDICATOR_WEIGHTS.recent),
-    indicator('EMA Cross', 'emaCross', scoreCross(raw.ema_cross_sma_9_12 ?? raw.ema_sma_cross_9_12 ?? raw.ema_cross_signal ?? raw.cross_signal), INDICATOR_WEIGHTS.emaCross),
-    indicator('EMA 21', 'ema21', compareNumbers(raw.ema_21 ?? raw.ema21, raw.sma_21 ?? raw.sma21 ?? raw.price), INDICATOR_WEIGHTS.ema21),
-    indicator('EMA 9/21', 'ema921', compareNumbers(raw.ema_9 ?? raw.ema9, raw.ema_21 ?? raw.ema21), INDICATOR_WEIGHTS.ema921),
-    indicator('EMA 21/50', 'ema2150', compareNumbers(raw.ema_21 ?? raw.ema21, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.ema2150),
-    indicator('EMA 50/100', 'ema50100', compareNumbers(raw.ema_50 ?? raw.ema50, raw.ema_100 ?? raw.ema100), INDICATOR_WEIGHTS.ema50100),
-    indicator('EMA P/50', 'emaPrice50', compareNumbers(raw.price ?? raw.close ?? raw.last_price, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.emaPrice50),
-    indicator('MACD', 'macd', compareNumbers(raw.macd ?? raw.macd_line, raw.macd_signal ?? raw.signal), INDICATOR_WEIGHTS.macd),
+    indicator('Last Candle', 'last', scoreField(pick(raw, 'last_candle', 'lastCandle', 'last_candle_signal', 'last_candle_direction')), INDICATOR_WEIGHTS.last),
+    indicator('Last 5', 'recent', candleSequenceScore(pick(raw, 'recent_candles', 'last_5', 'last5', 'last_five')) || scoreField(pick(raw, 'last_5_signal', 'last5_signal')), INDICATOR_WEIGHTS.recent),
+    indicator('EMA Cross', 'emaCross', scoreField(pick(raw, 'ema_cross', 'emaCross', 'ema_cross_sma_9_12', 'ema_sma_cross_9_12', 'ema_cross_signal', 'cross_signal')), INDICATOR_WEIGHTS.emaCross),
+    indicator('EMA 21', 'ema21', scoreField(pick(raw, 'ema_21_signal', 'ema21_signal', 'ema_21_bias')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.sma_21 ?? raw.sma21 ?? raw.price), INDICATOR_WEIGHTS.ema21),
+    indicator('EMA 9/21', 'ema921', scoreField(pick(raw, 'ema_9_21', 'ema9_21', 'ema_9_21_signal')) || compareNumbers(raw.ema_9 ?? raw.ema9, raw.ema_21 ?? raw.ema21), INDICATOR_WEIGHTS.ema921),
+    indicator('EMA 21/50', 'ema2150', scoreField(pick(raw, 'ema_21_50', 'ema21_50', 'ema_21_50_signal')) || compareNumbers(raw.ema_21 ?? raw.ema21, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.ema2150),
+    indicator('EMA 50/100', 'ema50100', scoreField(pick(raw, 'ema_50_100', 'ema50_100', 'ema_50_100_signal')) || compareNumbers(raw.ema_50 ?? raw.ema50, raw.ema_100 ?? raw.ema100), INDICATOR_WEIGHTS.ema50100),
+    indicator('EMA P/50', 'emaPrice50', scoreField(pick(raw, 'ema_p_50', 'emaP50', 'ema_price_50', 'price_ema_50_signal')) || compareNumbers(raw.price ?? raw.close ?? raw.last_price, raw.ema_50 ?? raw.ema50), INDICATOR_WEIGHTS.emaPrice50),
+    indicator('MACD', 'macd', scoreField(pick(raw, 'macd_direction', 'macd_signal_text', 'macd_bias')) || compareNumbers(raw.macd ?? raw.macd_line, raw.macd_signal ?? raw.signal), INDICATOR_WEIGHTS.macd),
     indicator('RSI', 'rsi', rsiScore(raw.rsi_14 ?? raw.rsi14 ?? raw.rsi, raw.rsi_signal ?? raw.rsiSignal), INDICATOR_WEIGHTS.rsi),
-    indicator('Exhaustion', 'exhaustion', exhaustionScore(raw.exhaustion ?? raw.exhaustion_signal ?? raw.exhaustionSignal), INDICATOR_WEIGHTS.exhaustion),
+    indicator('Exhaustion', 'exhaustion', exhaustionScore(pick(raw, 'exhaustion', 'exhaustion_signal', 'exhaustionSignal')), INDICATOR_WEIGHTS.exhaustion),
   ];
   const usable = indicators.filter((item) => Number.isFinite(item.score));
   const totalWeight = usable.reduce((sum, item) => sum + item.weight, 0);
@@ -209,6 +209,33 @@ function indicator(label, key, score, weight) {
 function firstNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function pick(raw, ...keys) {
+  for (const key of keys) {
+    if (raw?.[key] !== undefined && raw[key] !== null && raw[key] !== '') return raw[key];
+  }
+  return undefined;
+}
+
+function scoreField(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  if (Array.isArray(value) && value.length >= 2) return compareNumbers(value[0], value[1]);
+  if (typeof value === 'number') return Math.sign(value);
+  if (typeof value === 'object') {
+    const direct = value.direction ?? value.signal ?? value.trend ?? value.bias ?? value.value ?? value.result;
+    const directScore = scoreField(direct);
+    if (directScore) return directScore;
+    const left = value.left ?? value.fast ?? value.ema ?? value.first ?? value.a ?? value.current;
+    const right = value.right ?? value.slow ?? value.sma ?? value.second ?? value.b ?? value.baseline;
+    return compareNumbers(left, right);
+  }
+  const text = String(value);
+  const directScore = directionScore(text);
+  if (directScore) return directScore;
+  const nums = text.match(/-?\d+(?:\.\d+)?/g)?.map(Number).filter(Number.isFinite) || [];
+  if (nums.length >= 2) return compareNumbers(nums[0], nums[1]);
+  return 0;
 }
 
 function compareNumbers(a, b) {
