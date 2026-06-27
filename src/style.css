@@ -1276,6 +1276,98 @@ body {
   font-size: 1.35rem;
 }
 
+.ocrReviewMeta {
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid rgba(20, 184, 166, .26);
+  border-radius: var(--radius);
+  background: rgba(15, 118, 110, .12);
+}
+
+.ocrReviewMeta.needsReview {
+  border-color: rgba(245, 158, 11, .38);
+  background: rgba(245, 158, 11, .10);
+}
+
+.ocrReviewMeta.needsFix {
+  border-color: rgba(244, 63, 94, .42);
+  background: rgba(244, 63, 94, .11);
+}
+
+.ocrReviewMeta > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ocrReviewMeta svg {
+  flex: 0 0 auto;
+  color: var(--gold);
+}
+
+.ocrReviewMeta b {
+  font-weight: 900;
+}
+
+.ocrReviewMeta span {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 800;
+}
+
+.ocrReviewMeta ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: .84rem;
+  line-height: 1.45;
+}
+
+.ocrDebug summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: .78rem;
+  font-weight: 800;
+}
+
+.ocrDebug pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, .24);
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.fieldHint {
+  margin-top: 5px;
+  color: var(--gold);
+  font-size: .72rem;
+  font-weight: 800;
+}
+
+.field-error input,
+.field-error select,
+.field-error .assetCombobox input {
+  border-color: rgba(244, 63, 94, .62);
+  box-shadow: 0 0 0 1px rgba(244, 63, 94, .16);
+}
+
+.field-error .fieldHint {
+  color: #fb7185;
+}
+
+.field-warning input,
+.field-warning select,
+.field-warning .assetCombobox input {
+  border-color: rgba(245, 158, 11, .52);
+}
+
 .panelActions {
   display: flex;
   align-items: center;
@@ -1810,6 +1902,15 @@ body {
 .queueItem.active {
   border-color: rgba(99,179,255,.55);
   background: rgba(99,179,255,.12);
+}
+
+.queueItem.needsReview {
+  border-color: rgba(245, 158, 11, .34);
+}
+
+.queueItem.needsFix {
+  border-color: rgba(244, 63, 94, .44);
+  background: rgba(244, 63, 94, .08);
 }
 
 .queueItem span,
