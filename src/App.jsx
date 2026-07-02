@@ -358,6 +358,7 @@ function App() {
     user: null,
     status: cloudConfigured ? 'connecting' : 'setup',
     security: null,
+    securitySession: null,
     error: '',
     hydrated: false,
   });
@@ -370,6 +371,24 @@ function App() {
     const key = authState.user ? `${USER_LS_PREFIX}${authState.user.uid}` : LS;
     localStorage.setItem(key, JSON.stringify(data));
   }, [data, authState.user, authState.hydrated]);
+
+  const hydrateCloudJournal = async (user) => {
+    const cloud = await getCloud();
+    const remote = await cloud.loadCloudJournal(user.uid);
+    const userCache = savedForUser(user.uid);
+    const hasRemote = Boolean(remote.trades.length || remote.transactions?.length || remote.settings);
+    const base = hasRemote
+      ? normalizeJournal(remote)
+      : (userCache || normalizeJournal({ trades: [], settings: DEFAULT_SETTINGS }));
+    const merged = {
+      trades: hasRemote ? mergeTrades(base.trades, userCache?.trades) : mergeTrades(base.trades),
+      transactions: hasRemote ? mergeTransactions(base.transactions, userCache?.transactions) : mergeTransactions(base.transactions),
+      settings: remote.settings ? normalizeJournal({ settings: remote.settings }).settings : base.settings,
+    };
+    setData(merged);
+    await cloud.initializeCloudJournal(user, merged);
+    return merged;
+  };
 
   useEffect(() => {
     let unsubscribe = () => {};
@@ -385,44 +404,44 @@ function App() {
           user: null,
           status: cloudConfigured ? 'local' : 'setup',
           security: null,
+          securitySession: null,
           error: '',
           hydrated: false,
         }));
         return;
       }
 
-      setAuthState((current) => ({ ...current, loading: true, user, status: 'syncing', security: 'checking', error: '', hydrated: false }));
+      setAuthState((current) => ({ ...current, loading: true, user, status: 'verify', security: 'checking', securitySession: null, error: '', hydrated: false }));
       try {
         const cloud = await getCloud();
-        const remote = await cloud.loadCloudJournal(user.uid);
-        const userCache = savedForUser(user.uid);
-        const hasRemote = Boolean(remote.trades.length || remote.transactions?.length || remote.settings);
-        const base = hasRemote
-          ? normalizeJournal(remote)
-          : (userCache || normalizeJournal({ trades: [], settings: DEFAULT_SETTINGS }));
-        const merged = {
-          trades: hasRemote ? mergeTrades(base.trades, userCache?.trades) : mergeTrades(base.trades),
-          transactions: hasRemote ? mergeTransactions(base.transactions, userCache?.transactions) : mergeTransactions(base.transactions),
-          settings: remote.settings ? normalizeJournal({ settings: remote.settings }).settings : base.settings,
-        };
-        setData(merged);
-        await cloud.initializeCloudJournal(user, merged);
-
-        let security = 'verified';
-        try {
-          await cloud.verifyWithTcxSecurity(user);
-        } catch {
-          security = 'unavailable';
+        const securitySession = await cloud.getTcxSecuritySession().catch(() => null);
+        if (!securitySession) {
+          if (!disposed) setAuthState((current) => ({
+            ...current,
+            loading: false,
+            user,
+            status: 'verify',
+            security: 'pending',
+            securitySession: null,
+            error: '',
+            hydrated: false,
+          }));
+          return;
         }
-        if (!disposed) setAuthState((current) => ({ ...current, loading: false, user, status: 'synced', security, error: '', hydrated: true }));
+
+        await hydrateCloudJournal(user);
+        await cloud.verifyWithTcxSecurity(user).catch(() => null);
+        if (!disposed) setAuthState((current) => ({ ...current, loading: false, user, status: 'synced', security: 'verified', securitySession, error: '', hydrated: true }));
       } catch (error) {
         if (!disposed) setAuthState((current) => ({
           ...current,
           loading: false,
           user,
           status: 'error',
-          security: 'unavailable',
+          security: 'pending',
+          securitySession: null,
           error: friendlyAuthError(error),
+          hydrated: false,
         }));
       }
     };
@@ -462,9 +481,47 @@ function App() {
     }
   };
 
+  const verifyTcxSecurity = async (credentials) => {
+    const user = userRef.current;
+    if (!user) {
+      await signIn();
+      return;
+    }
+    setAuthState((current) => ({ ...current, loading: true, status: 'verify', security: 'checking', error: '' }));
+    try {
+      const cloud = await getCloud();
+      await cloud.loginWithTcxSecurity(credentials);
+      const securitySession = await cloud.getTcxSecuritySession();
+      if (!securitySession) throw new Error('TCX Security session was not created.');
+      await hydrateCloudJournal(user);
+      await cloud.verifyWithTcxSecurity(user).catch(() => null);
+      setAuthState((current) => ({
+        ...current,
+        loading: false,
+        user,
+        status: 'synced',
+        security: 'verified',
+        securitySession,
+        error: '',
+        hydrated: true,
+      }));
+    } catch (error) {
+      setAuthState((current) => ({
+        ...current,
+        loading: false,
+        status: 'verify',
+        security: 'pending',
+        securitySession: null,
+        error: friendlySecurityError(error),
+        hydrated: false,
+      }));
+    }
+  };
+
   const signOut = async () => {
     setAccountOpen(false);
     const cloud = await getCloud();
+    await cloud.logoutTcxSecurity();
     await cloud.logout();
   };
 
@@ -601,6 +658,20 @@ function App() {
     setSelectedDate(key);
     setDayPopup(key);
   };
+
+  const accessGranted = Boolean(authState.user && authState.hydrated && authState.security === 'verified');
+  if (!accessGranted) {
+    return (
+      <div className="authOnly" data-theme={theme}>
+        <AuthGate
+          authState={authState}
+          onGoogleSignIn={signIn}
+          onTcxSecuritySubmit={verifyTcxSecurity}
+          onSignOut={signOut}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="app" data-theme={theme}>
@@ -1598,9 +1669,191 @@ function SettingsPage({ settings, updateSettings, authState, openAccount, trades
           <button className="soft archiveButton" onClick={() => { const count = onArchive(); setArchiveStatus(count ? `${count} trades exported and removed.` : 'No trades are old enough to archive.'); }}><Download size={16} />Export & remove old trades</button>
           {archiveStatus && <span className="green">{archiveStatus}</span>}
         </div>
-        <div className="securityNote"><ShieldCheck size={18} /><div><b>TCX Security</b><span>{authState.security === 'verified' ? 'Google identity verified server-side.' : 'Identity verification activates with cloud sign-in.'}</span></div></div>
+        <div className="securityNote"><ShieldCheck size={18} /><div><b>TCX Security</b><span>{authState.security === 'verified' ? 'Google and TCX Security login verified.' : 'Verification is required before journal access.'}</span></div></div>
       </div>
     </section>
+  );
+}
+
+function AuthGate({ authState, onGoogleSignIn, onTcxSecuritySubmit, onSignOut }) {
+  const [securityConfig, setSecurityConfig] = useState({ turnstileSiteKey: '', links: {} });
+  const [portalUrl, setPortalUrl] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    getCloud().then(async (cloud) => {
+      const config = await cloud.loadTcxSecurityPublicConfig().catch(() => ({}));
+      if (!active) return;
+      setSecurityConfig({
+        turnstileSiteKey: String(config?.turnstileSiteKey || '').trim(),
+        links: config?.links || {},
+      });
+      setPortalUrl(cloud.getTcxSecurityPortalUrl(window.location.href));
+    });
+    return () => { active = false; };
+  }, []);
+
+  const googleComplete = Boolean(authState.user);
+  const securityComplete = authState.security === 'verified';
+
+  return (
+    <section className="authGate">
+      <div className="authGatePanel">
+        <div className="authGateBrand">
+          <img src="/tcx-logo.svg" alt="" />
+          <div>
+            <span>TCX Journal</span>
+            <small>Protected trading journal</small>
+          </div>
+        </div>
+
+        <div className="authStepGrid" aria-label="Authentication progress">
+          <div className={googleComplete ? 'authStep done' : 'authStep active'}>
+            {googleComplete ? <Check size={16} /> : <LogIn size={16} />}
+            <span>Google</span>
+          </div>
+          <div className={securityComplete ? 'authStep done' : googleComplete ? 'authStep active' : 'authStep'}>
+            <ShieldCheck size={16} />
+            <span>Verify yourself</span>
+          </div>
+        </div>
+
+        {!authState.configured ? (
+          <div className="authGateBody">
+            <h1>Firebase setup required</h1>
+            <p>The Google sign-in keys must be configured before TCX Journal can open.</p>
+            <p className="setupNotice">Add the Firebase variables in Netlify, then redeploy the journal.</p>
+          </div>
+        ) : !authState.user ? (
+          <div className="authGateBody">
+            <h1>Sign in with Google</h1>
+            <p>Google comes first. The TCX Security verification opens after this account is confirmed.</p>
+            {authState.error && <p className="accountError">{authState.error}</p>}
+            <button className="googleButton" disabled={authState.loading} onClick={onGoogleSignIn}>
+              <span className="googleGlyph">G</span>{authState.loading ? 'Connecting...' : 'Continue with Google'}
+            </button>
+          </div>
+        ) : (
+          <TcxSecurityStep
+            authState={authState}
+            securityConfig={securityConfig}
+            portalUrl={portalUrl}
+            onSubmit={onTcxSecuritySubmit}
+            onSignOut={onSignOut}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function TcxSecurityStep({ authState, securityConfig, portalUrl, onSubmit, onSignOut }) {
+  const [loginId, setLoginId] = useState('');
+  const [password, setPassword] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const [localError, setLocalError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const turnstileRef = useRef(null);
+  const widgetRef = useRef(null);
+  const trialMode = isTrialCode(password);
+  const siteKey = String(securityConfig.turnstileSiteKey || '').trim();
+
+  useEffect(() => {
+    if (!trialMode) {
+      setTurnstileToken('');
+      widgetRef.current = null;
+      return undefined;
+    }
+    if (!siteKey || !turnstileRef.current) return undefined;
+
+    let disposed = false;
+    loadTcxTurnstileScript().then((turnstile) => {
+      if (disposed || !turnstile || widgetRef.current !== null || !turnstileRef.current) return;
+      widgetRef.current = turnstile.render(turnstileRef.current, {
+        sitekey: siteKey,
+        theme: 'dark',
+        callback: (token) => setTurnstileToken(String(token || '')),
+        'expired-callback': () => setTurnstileToken(''),
+        'error-callback': () => setTurnstileToken(''),
+      });
+    }).catch(() => {
+      if (!disposed) setLocalError('Human verification could not load.');
+    });
+
+    return () => { disposed = true; };
+  }, [trialMode, siteKey]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setLocalError('');
+    if (!loginId.trim()) {
+      setLocalError('Enter your Quotex account ID or unlimited username.');
+      return;
+    }
+    if (!password.trim()) {
+      setLocalError('Enter your TCX Security password.');
+      return;
+    }
+    if (trialMode && siteKey && !turnstileToken) {
+      setLocalError('Complete the human verification.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await onSubmit({
+        loginId: loginId.trim(),
+        password: password.trim(),
+        turnstileToken,
+        fingerprintHash: await getClientFingerprintHash(),
+      });
+      if (window.turnstile && widgetRef.current !== null) {
+        try { window.turnstile.reset(widgetRef.current); } catch {}
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const busy = submitting || authState.loading;
+  const message = localError || authState.error;
+
+  return (
+    <div className="authGateBody">
+      <div className="authUserRow">
+        {authState.user.photoURL && <img src={authState.user.photoURL} alt="" referrerPolicy="no-referrer" />}
+        <div>
+          <b>{authState.user.displayName || authState.user.email}</b>
+          <span>{authState.user.email}</span>
+        </div>
+        <button className="textButton" onClick={onSignOut} disabled={busy}>Change</button>
+      </div>
+
+      <h1>Verify yourself</h1>
+      <p>Use the same TCX Security login you use for the current access system.</p>
+
+      <form className="verifyForm" onSubmit={submit}>
+        <label>
+          <span>Quotex ID or username</span>
+          <input value={loginId} onChange={(event) => setLoginId(event.target.value)} autoComplete="username" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
+        </label>
+        {trialMode && (
+          <div className="turnstileSlot">
+            {siteKey ? <div ref={turnstileRef} /> : <p className="setupNotice">Turnstile site key is missing from TCX Security public config.</p>}
+          </div>
+        )}
+        {message && <p className="accountError">{message}</p>}
+        <button className="googleButton verifyButton" disabled={busy} type="submit">
+          <ShieldCheck size={17} />{busy ? 'Verifying...' : 'Verify yourself'}
+        </button>
+      </form>
+
+      {portalUrl && <a className="securityPortalLink" href={portalUrl}>Open full TCX Security portal</a>}
+    </div>
   );
 }
 
@@ -3313,7 +3566,8 @@ function winRate(trades) {
 
 function accountStatusText(authState) {
   if (!authState.configured) return 'Cloud connection needs Firebase project keys';
-  if (!authState.user) return 'Use Google to sync your journal privately';
+  if (!authState.user) return 'Google sign-in required';
+  if (authState.security !== 'verified') return 'TCX Security verification required';
   if (authState.status === 'syncing') return 'Saving your latest changes';
   if (authState.status === 'error') return authState.error || 'Cloud sync needs attention';
   if (authState.security === 'verified') return 'Synced and verified by TCX Security';
@@ -3328,6 +3582,16 @@ function friendlyAuthError(error) {
   if (code.includes('permission-denied')) return 'Firestore access was denied. Publish the included security rules.';
   if (code.includes('network')) return 'The cloud is unreachable right now. Your journal is still safe on this device.';
   return error?.message || 'Cloud sign-in could not be completed.';
+}
+
+function friendlySecurityError(error) {
+  const code = String(error?.code || '');
+  if (code === 'TURNSTILE_REQUIRED' || code === 'TURNSTILE_FAILED') return error.message || 'Human verification failed.';
+  if (code === 'DEVICE_FINGERPRINT_REQUIRED') return 'This device could not be verified. Refresh and try again.';
+  if (code === 'LOGIN_ID_REQUIRED') return 'Enter your Quotex account ID or unlimited username.';
+  if (code === 'PASSWORD_REQUIRED') return 'Enter your TCX Security password.';
+  if (error?.message?.includes('Failed to fetch')) return 'TCX Security is unreachable from this domain. Check the security origin and allowed origins.';
+  return error?.message || 'TCX Security verification failed.';
 }
 
 function csvCell(value) {
@@ -3345,6 +3609,47 @@ function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isTrialCode(value) {
+  return String(value || '').trim().toLowerCase() === 'trydemo';
+}
+
+let tcxTurnstilePromise;
+function loadTcxTurnstileScript() {
+  if (window.turnstile) return Promise.resolve(window.turnstile);
+  if (tcxTurnstilePromise) return tcxTurnstilePromise;
+  tcxTurnstilePromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve(window.turnstile || null);
+    script.onerror = () => reject(new Error('Turnstile failed to load.'));
+    document.head.appendChild(script);
+  });
+  return tcxTurnstilePromise;
+}
+
+let fingerprintHashPromise;
+async function getClientFingerprintHash() {
+  if (fingerprintHashPromise) return fingerprintHashPromise;
+  fingerprintHashPromise = (async () => {
+    const parts = [
+      navigator.userAgent || '',
+      navigator.language || '',
+      navigator.platform || '',
+      Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      `${window.screen?.width || 0}x${window.screen?.height || 0}`,
+      String(window.devicePixelRatio || 1),
+    ];
+    const raw = parts.join('|');
+    if (!window.crypto?.subtle) return raw;
+    const bytes = new TextEncoder().encode(raw);
+    const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  })();
+  return fingerprintHashPromise;
 }
 
 function downloadText(text, filename, type) {

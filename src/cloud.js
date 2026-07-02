@@ -35,6 +35,13 @@ const auth = app ? getAuth(app) : null;
 const db = app ? getFirestore(app) : null;
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+const tcxSecurityOrigin = String(import.meta.env.VITE_TCX_SECURITY_ORIGIN || import.meta.env.VITE_TCX_SECURITY_URL || '')
+  .trim()
+  .replace(/\/+$/, '');
+
+function tcxSecurityEndpoint(path) {
+  return `${tcxSecurityOrigin}${path}`;
+}
 
 export function watchAuth(callback) {
   if (!auth) {
@@ -52,6 +59,58 @@ export async function loginWithGoogle() {
 
 export async function logout() {
   if (auth) await signOut(auth);
+}
+
+export function getTcxSecurityPortalUrl(returnTo = window.location.href) {
+  if (!tcxSecurityOrigin) return '';
+  const url = new URL(tcxSecurityOrigin);
+  url.searchParams.set('returnTo', returnTo);
+  return url.href;
+}
+
+export async function loadTcxSecurityPublicConfig() {
+  const response = await fetch(tcxSecurityEndpoint('/.netlify/functions/public-config'), {
+    method: 'GET',
+    cache: 'no-store',
+  });
+  if (!response.ok) return {};
+  return response.json();
+}
+
+export async function getTcxSecuritySession() {
+  const response = await fetch(tcxSecurityEndpoint('/.netlify/functions/session'), {
+    method: 'GET',
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.authenticated || !data?.session) return null;
+  return data.session;
+}
+
+export async function loginWithTcxSecurity(payload) {
+  const response = await fetch(tcxSecurityEndpoint('/.netlify/functions/auth'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok) {
+    const error = new Error(data?.error || 'TCX Security login failed.');
+    error.code = data?.code || '';
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+export async function logoutTcxSecurity() {
+  await fetch(tcxSecurityEndpoint('/.netlify/functions/logout'), {
+    method: 'POST',
+    credentials: 'include',
+    cache: 'no-store',
+  }).catch(() => {});
 }
 
 export async function loadCloudJournal(uid) {
@@ -139,6 +198,7 @@ export async function saveCloudSettings(uid, settings) {
 export async function verifyWithTcxSecurity(user) {
   const token = await user.getIdToken(true);
   const response = await fetch('/.netlify/functions/tcx-security', {
+    credentials: 'include',
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) throw new Error('TCX Security verification failed.');

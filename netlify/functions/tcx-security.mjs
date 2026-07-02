@@ -7,6 +7,33 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
+function tcxSecuritySessionUrl() {
+  const explicit = String(process.env.TCX_SECURITY_SESSION_URL || '').trim();
+  if (explicit) return explicit;
+  const origin = String(process.env.TCX_SECURITY_ORIGIN || '').trim().replace(/\/+$/, '');
+  return origin ? `${origin}/.netlify/functions/session` : '';
+}
+
+async function readTcxSecuritySession(event) {
+  const url = tcxSecuritySessionUrl();
+  if (!url) return { configured: false, authenticated: false, session: null };
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      cookie: event.headers.cookie || event.headers.Cookie || '',
+      origin: event.headers.origin || event.headers.Origin || '',
+      'user-agent': event.headers['user-agent'] || event.headers['User-Agent'] || '',
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  return {
+    configured: true,
+    authenticated: Boolean(response.ok && payload.authenticated && payload.session),
+    session: payload.session || null,
+  };
+}
+
 export async function handler(event) {
   if (event.httpMethod !== 'GET') return json(405, { error: 'Method not allowed' });
 
@@ -30,6 +57,11 @@ export async function handler(event) {
       return json(401, { error: 'Invalid or expired identity token' });
     }
 
+    const tcxSecurity = await readTcxSecuritySession(event);
+    if (tcxSecurity.configured && !tcxSecurity.authenticated) {
+      return json(403, { error: 'TCX Security session is required' });
+    }
+
     return json(200, {
       verified: true,
       tag: 'TCX_SECURITY_VERIFIED',
@@ -37,6 +69,7 @@ export async function handler(event) {
       userId: identity.localId,
       emailVerified: Boolean(identity.emailVerified),
       provider: identity.providerUserInfo?.[0]?.providerId || 'google.com',
+      tcxSecurity,
       verifiedAt: new Date().toISOString(),
     });
   } catch {
