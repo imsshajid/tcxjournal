@@ -1,84 +1,47 @@
-import { initializeApp } from 'firebase/app';
-import {
-  GoogleAuthProvider,
-  getAuth,
-  onAuthStateChanged,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  serverTimestamp,
-  setDoc,
-  writeBatch,
-} from 'firebase/firestore';
+const DEFAULT_AUTH_CENTER_URL = 'https://auth.tradingcandle.co';
 
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-};
+let authCenterUrl = String(
+  import.meta.env.VITE_TCX_SECURITY_ORIGIN
+  || import.meta.env.VITE_TCX_AUTH_CENTER_URL
+  || import.meta.env.VITE_TCX_SECURITY_URL
+  || DEFAULT_AUTH_CENTER_URL
+).trim().replace(/\/+$/, '');
 
-export const cloudConfigured = ['apiKey', 'authDomain', 'projectId', 'appId']
-  .every((key) => Boolean(firebaseConfig[key]));
+export const cloudConfigured = true;
 
-const app = cloudConfigured ? initializeApp(firebaseConfig) : null;
-const auth = app ? getAuth(app) : null;
-const db = app ? getFirestore(app) : null;
-const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
-const tcxSecurityOrigin = String(import.meta.env.VITE_TCX_SECURITY_ORIGIN || import.meta.env.VITE_TCX_SECURITY_URL || '')
-  .trim()
-  .replace(/\/+$/, '');
-
-function tcxSecurityEndpoint(path) {
-  return `${tcxSecurityOrigin}${path}`;
+function normalizeAuthCenterUrl(value) {
+  return String(value || DEFAULT_AUTH_CENTER_URL).trim().replace(/\/+$/, '') || DEFAULT_AUTH_CENTER_URL;
 }
 
-export function watchAuth(callback) {
-  if (!auth) {
-    callback(null);
-    return () => {};
+export async function loadPublicConfig() {
+  try {
+    const response = await fetch('/.netlify/functions/public-config', {
+      method: 'GET',
+      cache: 'no-store',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data?.authCenterUrl) {
+      authCenterUrl = normalizeAuthCenterUrl(data.authCenterUrl);
+    }
+    return data || {};
+  } catch {
+    return {};
   }
-  return onAuthStateChanged(auth, callback);
-}
-
-export async function loginWithGoogle() {
-  if (!auth) throw new Error('Firebase is not configured yet.');
-  const credential = await signInWithPopup(auth, googleProvider);
-  return credential.user;
-}
-
-export async function logout() {
-  if (auth) await signOut(auth);
 }
 
 export function getTcxSecurityPortalUrl(returnTo = window.location.href) {
-  if (!tcxSecurityOrigin) return '';
-  const url = new URL(tcxSecurityOrigin);
+  const url = new URL(authCenterUrl || DEFAULT_AUTH_CENTER_URL);
+  url.searchParams.set('app', 'journal');
   url.searchParams.set('returnTo', returnTo);
   return url.href;
 }
 
-export async function loadTcxSecurityPublicConfig() {
-  const response = await fetch(tcxSecurityEndpoint('/.netlify/functions/public-config'), {
-    method: 'GET',
-    cache: 'no-store',
-  });
-  if (!response.ok) return {};
-  return response.json();
+export function redirectToTcxSecurity(returnTo = window.location.href) {
+  window.location.href = getTcxSecurityPortalUrl(returnTo);
 }
 
 export async function getTcxSecuritySession() {
-  const response = await fetch(tcxSecurityEndpoint('/.netlify/functions/session'), {
+  const response = await fetch('/.netlify/functions/session', {
     method: 'GET',
     credentials: 'include',
     cache: 'no-store',
@@ -88,162 +51,10 @@ export async function getTcxSecuritySession() {
   return data.session;
 }
 
-export async function loginWithTcxSecurity(payload) {
-  const response = await fetch(tcxSecurityEndpoint('/.netlify/functions/auth'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data?.ok) {
-    const error = new Error(data?.error || 'TCX Security login failed.');
-    error.code = data?.code || '';
-    error.status = response.status;
-    throw error;
-  }
-  return data;
-}
-
 export async function logoutTcxSecurity() {
-  await fetch(tcxSecurityEndpoint('/.netlify/functions/logout'), {
+  await fetch('/.netlify/functions/logout', {
     method: 'POST',
     credentials: 'include',
     cache: 'no-store',
   }).catch(() => {});
-}
-
-export async function loadCloudJournal(uid) {
-  ensureCloud();
-  const [tradeSnapshot, settingsSnapshot, transactionSnapshot] = await Promise.all([
-    getDocs(collection(db, 'users', uid, 'trades')),
-    getDoc(doc(db, 'users', uid, 'journal', 'settings')),
-    getDocs(collection(db, 'users', uid, 'transactions')),
-  ]);
-  return {
-    trades: tradeSnapshot.docs.map((tradeDoc) => ({ id: tradeDoc.id, ...tradeDoc.data() })),
-    transactions: transactionSnapshot.docs.map((item) => ({ id: item.id, ...item.data() })),
-    settings: settingsSnapshot.exists() ? settingsSnapshot.data().settings : null,
-  };
-}
-
-export async function initializeCloudJournal(user, journal) {
-  ensureCloud();
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'users', user.uid), cleanObject({
-    displayName: user.displayName,
-    email: user.email,
-    photoURL: user.photoURL,
-    provider: 'google.com',
-    product: 'TCX Journal',
-    securityLayer: 'TCX Security',
-    updatedAt: serverTimestamp(),
-  }), { merge: true });
-  batch.set(doc(db, 'users', user.uid, 'journal', 'settings'), {
-    settings: cleanObject(journal.settings),
-    updatedAt: serverTimestamp(),
-  }, { merge: true });
-  await batch.commit();
-  await writeTradeChunks(user.uid, journal.trades);
-  await writeTransactionChunks(user.uid, journal.transactions || []);
-}
-
-export async function saveCloudTrades(uid, trades) {
-  ensureCloud();
-  await writeTradeChunks(uid, trades);
-}
-
-export async function saveCloudTransactions(uid, transactions) {
-  ensureCloud();
-  await writeTransactionChunks(uid, transactions);
-}
-
-export async function deleteCloudTransactions(uid, transactionIds) {
-  ensureCloud();
-  for (let start = 0; start < transactionIds.length; start += 450) {
-    const batch = writeBatch(db);
-    transactionIds.slice(start, start + 450).forEach((id) => batch.delete(doc(db, 'users', uid, 'transactions', id)));
-    await batch.commit();
-  }
-}
-
-export async function deleteCloudTrade(uid, tradeId) {
-  ensureCloud();
-  await deleteDoc(doc(db, 'users', uid, 'trades', tradeId));
-}
-
-export async function clearCloudJournal(uid) {
-  ensureCloud();
-  const snapshots = await Promise.all([
-    getDocs(collection(db, 'users', uid, 'trades')),
-    getDocs(collection(db, 'users', uid, 'transactions')),
-  ]);
-  const documents = snapshots.flatMap((snapshot) => snapshot.docs);
-  for (let start = 0; start < documents.length; start += 450) {
-    const batch = writeBatch(db);
-    documents.slice(start, start + 450).forEach((item) => batch.delete(item.ref));
-    await batch.commit();
-  }
-  await deleteDoc(doc(db, 'users', uid, 'journal', 'settings'));
-}
-
-export async function saveCloudSettings(uid, settings) {
-  ensureCloud();
-  await setDoc(doc(db, 'users', uid, 'journal', 'settings'), {
-    settings: cleanObject(settings),
-    updatedAt: serverTimestamp(),
-  }, { merge: true });
-}
-
-export async function verifyWithTcxSecurity(user) {
-  const token = await user.getIdToken(true);
-  const response = await fetch('/.netlify/functions/tcx-security', {
-    credentials: 'include',
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) throw new Error('TCX Security verification failed.');
-  return response.json();
-}
-
-function ensureCloud() {
-  if (!db) throw new Error('Firebase is not configured yet.');
-}
-
-function cleanObject(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-async function writeTradeChunks(uid, trades) {
-  for (let start = 0; start < trades.length; start += 450) {
-    const batch = writeBatch(db);
-    trades.slice(start, start + 450).forEach((trade) => {
-      batch.set(doc(db, 'users', uid, 'trades', trade.id), {
-        ...cleanObject(trade),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-    });
-    await batch.commit();
-  }
-}
-
-export async function deleteCloudTrades(uid, ids) {
-  ensureCloud();
-  for (let start = 0; start < ids.length; start += 450) {
-    const batch = writeBatch(db);
-    ids.slice(start, start + 450).forEach((id) => batch.delete(doc(db, 'users', uid, 'trades', id)));
-    await batch.commit();
-  }
-}
-
-async function writeTransactionChunks(uid, transactions) {
-  for (let start = 0; start < transactions.length; start += 450) {
-    const batch = writeBatch(db);
-    transactions.slice(start, start + 450).forEach((item) => {
-      batch.set(doc(db, 'users', uid, 'transactions', item.id), {
-        ...cleanObject(item),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-    });
-    await batch.commit();
-  }
 }

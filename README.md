@@ -13,8 +13,8 @@ Trading Candle X Journal is a local-first FTT and CFD journal deployed at `tcxjo
 - Delete trades from Trade History.
 - Separate FTT and CFD journal filtering and analytics.
 - Searchable single-asset trade entry.
-- Required Google sign-in with private per-user Firestore sync.
-- Google-first access gate followed by TCX Security login verification.
+- TCX Security redirect gate, matching the other Trading Candle apps.
+- Google-first verification is handled inside TCX Security before the current access login.
 
 ## Netlify settings
 Build command:
@@ -32,34 +32,29 @@ npm install
 npm run dev
 ```
 
-## Free cloud accounts
-
-1. Create a Firebase project and Web app.
-2. Enable Google in Authentication > Sign-in method.
-3. Add `tcxjournal.netlify.app` to Authentication > Authorized domains.
-4. Create a Firestore database, then publish `firestore.rules` with `firebase deploy --only firestore:rules`.
-5. Add every variable from `.env.example` to Netlify. `FIREBASE_WEB_API_KEY` is the same value as `VITE_FIREBASE_API_KEY`.
-6. Trigger a new Netlify deploy so Vite receives the build-time variables.
-
-Trades are stored at `users/{uid}/trades/{tradeId}` and settings at `users/{uid}/journal/settings`. The rules restrict both paths to the matching authenticated user. Existing browser data is migrated on the first successful sign-in and remains cached per user for fast local access.
-
 ## TCX Security gate
 
-TCX Journal now requires Google first, then TCX Security credentials before the journal renders.
+TCX Journal does not render any login form. If a shared TCX Security session is missing, it redirects to TCX Security with `app=journal&returnTo=...`. TCX Security performs Google sign-in first, then the current TCX verification form, then redirects back to the journal.
 
 Set these in the journal deployment:
 ```bash
-VITE_TCX_SECURITY_ORIGIN=https://your-tcxsecurity-domain
-TCX_SECURITY_ORIGIN=https://your-tcxsecurity-domain
+VITE_TCX_SECURITY_ORIGIN=https://auth.tradingcandle.co
+AUTH_CENTER_URL=https://auth.tradingcandle.co
+JWT_SECRET=the-same-secret-as-tcxsecurity
+SESSION_COOKIE_DOMAIN=.tradingcandle.co
 ```
 
 Set these in the TCX Security deployment:
 ```bash
 ALLOWED_ORIGIN=https://your-tcxjournal-domain
 JOURNAL_APP_URL=https://your-tcxjournal-domain
+FIREBASE_WEB_API_KEY=your-firebase-web-api-key
+FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_APP_ID=your-firebase-web-app-id
 ```
 
-For custom subdomains under the same parent domain, use a shared cookie domain such as `SESSION_COOKIE_DOMAIN=.tradingcandle.co`. For separate domains, set `SESSION_COOKIE_SAMESITE=None` and keep secure cookies enabled so the embedded verification requests can include the TCX Security session.
+Use custom subdomains under the same parent domain for shared-cookie auth, such as `auth.tradingcandle.co` and `journal.tradingcandle.co`, with `SESSION_COOKIE_DOMAIN=.tradingcandle.co`. A cookie set by a `workers.dev` or `netlify.app` domain cannot be shared with an unrelated domain.
 
 ## OCR
 

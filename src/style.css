@@ -1920,9 +1920,13 @@ body {
   text-transform: capitalize;
 }
 
-.syncPill.synced { color: #99f6e4; background: rgba(15, 118, 110, .28); }
+.syncPill.synced,
+.syncPill.verified { color: #99f6e4; background: rgba(15, 118, 110, .28); }
 .syncPill.syncing,
-.syncPill.connecting { color: #bae6fd; background: rgba(14, 116, 144, .25); }
+.syncPill.connecting,
+.syncPill.checking,
+.syncPill.saving { color: #bae6fd; background: rgba(14, 116, 144, .25); }
+.syncPill.required { color: #fde68a; background: rgba(161, 98, 7, .22); }
 .syncPill.error { color: #fecdd3; background: rgba(190, 24, 93, .2); }
 
 .securityNote {
@@ -2904,6 +2908,7 @@ body {
 }
 
 :root[data-theme="light"] .syncPill.synced,
+:root[data-theme="light"] .syncPill.verified,
 :root[data-theme="light"] .accountGlyph,
 :root[data-theme="light"] .securitySeal {
   color: #0f766e;
@@ -2913,9 +2918,16 @@ body {
 
 :root[data-theme="light"] .syncPill.syncing,
 :root[data-theme="light"] .syncPill.connecting,
+:root[data-theme="light"] .syncPill.checking,
+:root[data-theme="light"] .syncPill.saving,
 :root[data-theme="light"] .setupNotice {
   color: #0e7490;
   background: rgba(14, 165, 233, .12);
+}
+
+:root[data-theme="light"] .syncPill.required {
+  color: #92400e;
+  background: rgba(245, 158, 11, .14);
 }
 
 :root[data-theme="light"] .syncPill.error,
